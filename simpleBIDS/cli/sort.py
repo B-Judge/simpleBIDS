@@ -15,6 +15,7 @@ from simpleBIDS.patterns.series_grouper import SeriesGroup, group_series
 from simpleBIDS.patterns.slice_sampler import sample_slice
 from simpleBIDS.patterns.symlink_sorter import build_staging
 from simpleBIDS.utils.logging import configure_logging
+from simpleBIDS.utils.progress import ProgressBar
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,10 @@ def main(argv=None) -> None:
             shutil.rmtree(d)
         d.mkdir(parents=True)
 
+    # --- Phase 1: scan and group series ------------------------------------
     print(f"Scanning {sourcedata} …")
-    series_groups = group_series(sourcedata)
+    with ProgressBar(label="Reading files") as scan_bar:
+        series_groups = group_series(sourcedata, progress_callback=scan_bar.update)
 
     if not series_groups:
         print(
@@ -114,35 +117,37 @@ def main(argv=None) -> None:
         )
         sys.exit(0)
 
-    # Infer subject/session for each group
+    # --- Phase 2: infer subject/session and build staging ------------------
+    print(f"Building staging tree for {len(series_groups)} series …")
     for group in series_groups:
         meta = group.extra.get("dicom_metadata")
         group.subject_id = infer_subject(meta, group.representative_file)
         group.session_id = infer_session(meta, group.representative_file)
 
-    # Build staging tree
-    build_staging(series_groups, bids_root, staging_root=staging_root)
+    with ProgressBar(total=len(series_groups), label="Staging series") as stage_bar:
+        build_staging(series_groups, bids_root, staging_root=staging_root)
+        stage_bar.update(len(series_groups))
 
-    # Save cache: image slices (PNG) + per-series metadata JSON + manifest
+    # --- Phase 3: cache representative slices and metadata -----------------
     manifest: list[dict] = []
-    for i, group in enumerate(series_groups):
-        entry = _serialize_group(group, i)
+    with ProgressBar(total=len(series_groups), label="Caching slices") as cache_bar:
+        for i, group in enumerate(series_groups):
+            entry = _serialize_group(group, i)
 
-        # Save representative slice as PNG
-        slice_path = cache_dir / f"series_{i:04d}.png"
-        try:
-            pixels = sample_slice(group.representative_file)
-            _save_png(pixels, slice_path)
-            entry["slice_png"] = str(slice_path)
-        except Exception as exc:
-            logger.warning("Could not extract slice for series %d: %s", i, exc)
-            entry["slice_png"] = None
+            slice_path = cache_dir / f"series_{i:04d}.png"
+            try:
+                pixels = sample_slice(group.representative_file)
+                _save_png(pixels, slice_path)
+                entry["slice_png"] = str(slice_path)
+            except Exception as exc:
+                logger.warning("Could not extract slice for series %d: %s", i, exc)
+                entry["slice_png"] = None
 
-        # Save per-series metadata JSON
-        meta_path = cache_dir / f"series_{i:04d}.json"
-        meta_path.write_text(json.dumps(entry, indent=2, default=str), encoding="utf-8")
+            meta_path = cache_dir / f"series_{i:04d}.json"
+            meta_path.write_text(json.dumps(entry, indent=2, default=str), encoding="utf-8")
 
-        manifest.append(entry)
+            manifest.append(entry)
+            cache_bar.update(i + 1)
 
     (cache_dir / _MANIFEST_NAME).write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"

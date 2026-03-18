@@ -11,6 +11,7 @@ from pathlib import Path
 from simpleBIDS.bids.converter import convert_subject
 from simpleBIDS.patterns.symlink_sorter import cleanup_staging
 from simpleBIDS.utils.logging import configure_logging
+from simpleBIDS.utils.progress import ProgressBar
 
 logger = logging.getLogger(__name__)
 
@@ -125,22 +126,27 @@ def main(argv=None) -> None:
         )
         sys.exit(1)
 
-    print(f"Converting {len(subject_sessions)} subject/session(s) …\n")
+    ordered = sorted(subject_sessions.items())
+    n_total = len(ordered)
+    print(f"Converting {n_total} subject/session(s) …\n")
     any_failed = False
-    for (sub, ses), staging_dir in sorted(subject_sessions.items()):
-        success = convert_subject(
-            subject_id=sub,
-            session_id=ses,
-            staging_dir=staging_dir,
-            bids_root=bids_root,
-            config_path=config_path,
-            participants_path=participants_path,
-            progress_callback=print,
-        )
-        status = "OK" if success else "FAILED"
-        print(f"  sub-{sub}  ses-{ses}: {status}")
-        if not success:
-            any_failed = True
+    with ProgressBar(total=n_total, label="Converting") as conv_bar:
+        for i, ((sub, ses), staging_dir) in enumerate(ordered, 1):
+            conv_bar.update(i - 1)  # show progress before starting this subject
+            success = convert_subject(
+                subject_id=sub,
+                session_id=ses,
+                staging_dir=staging_dir,
+                bids_root=bids_root,
+                config_path=config_path,
+                participants_path=participants_path,
+                progress_callback=lambda msg: None,  # suppress per-file noise
+            )
+            status = "OK" if success else "FAILED"
+            # Print above the progress bar by first closing the current render
+            print(f"\r  sub-{sub}  ses-{ses}: {status}          ")
+            if not success:
+                any_failed = True
 
     if not args.keep_staging:
         cleanup_staging(bids_root)

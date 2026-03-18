@@ -9,6 +9,7 @@ from pathlib import Path
 
 from simpleBIDS.bids.participants import ParticipantRecord, ParticipantsTable
 from simpleBIDS.utils.logging import configure_logging
+from simpleBIDS.utils.progress import ProgressBar
 
 logger = logging.getLogger(__name__)
 
@@ -92,19 +93,21 @@ def main(argv=None) -> None:
         )
         sys.exit(0)
 
-    for sub_dir in sub_dirs:
-        participant_id = sub_dir.name  # e.g. "sub-001"
-        modalities = _collect_modalities(sub_dir)
-        extra = {"modalities": " ".join(sorted(modalities))} if modalities else {}
+    with ProgressBar(total=len(sub_dirs), label="Scanning subjects") as scan_bar:
+        for i, sub_dir in enumerate(sub_dirs, 1):
+            participant_id = sub_dir.name  # e.g. "sub-001"
+            modalities = _collect_modalities(sub_dir)
+            extra = {"modalities": " ".join(sorted(modalities))} if modalities else {}
 
-        record = ParticipantRecord(participant_id=participant_id, extra=extra)
+            record = ParticipantRecord(participant_id=participant_id, extra=extra)
 
-        if participant_id in table:
-            updated.append(participant_id)
-        else:
-            added.append(participant_id)
+            if participant_id in table:
+                updated.append(participant_id)
+            else:
+                added.append(participant_id)
 
-        table.add(record)
+            table.add(record)
+            scan_bar.update(i)
 
     table.save(tsv_path)
 

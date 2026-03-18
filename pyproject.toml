@@ -37,6 +37,11 @@ dev = [
 
 [project.scripts]
 simplebids = "simpleBIDS.gui.app:main"
+bids-init = "simpleBIDS.cli.init:main"
+bids-sort = "simpleBIDS.cli.sort:main"
+bids-label = "simpleBIDS.cli.label:main"
+bids-convert = "simpleBIDS.cli.convert:main"
+bids-update-participants = "simpleBIDS.cli.update_participants:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["simpleBIDS"]

@@ -286,6 +286,78 @@ Git submodule (bundled, not a pip dependency):
 
 ---
 
+## Command-Line Interface
+
+The tool exposes five CLI entry points, registered in `pyproject.toml` under `[project.scripts]`. Each command maps to a module in `simpleBIDS/cli/`.
+
+```
+simpleBIDS/
+├── simpleBIDS/
+│   └── cli/
+│       ├── __init__.py
+│       ├── init.py           # bids-init
+│       ├── sort.py           # bids-sort
+│       ├── label.py          # bids-label
+│       ├── convert.py        # bids-convert
+│       └── update_participants.py  # bids-update-participants
+```
+
+### `bids-init <bids_dir>`
+
+Scaffolds a new BIDS project directory at the given path.
+
+- Calls `bids.scaffold` to create the standard BIDS top-level structure
+- Creates `sourcedata/` as the designated drop location for raw neuroimaging data
+- Prints a short message instructing the user to place unorganized data in `sourcedata/` before running `bids-sort`
+- Accepts an optional `--name` flag to set the dataset name in `dataset_description.json` non-interactively; otherwise prompts interactively
+- Exits with a clear error if the directory already exists and looks like a BIDS project
+
+### `bids-sort <bids_dir>`
+
+Scans `<bids_dir>/sourcedata/`, groups series, and builds the symlinked staging structure.
+
+- Walks `sourcedata/` and runs all parsers (DICOM and/or NIfTI) to produce `SeriesGroup` objects
+- Runs subject/session inference on each group
+- Calls `symlink_sorter.build_staging()` to populate `<bids_dir>/.simpleBIDS_staging/`
+- Saves representative image slices (PNG) and per-series metadata (JSON) to `<bids_dir>/.simpleBIDS_cache/` for use by `bids-label`
+- Writes a machine-readable `series_manifest.json` to `.simpleBIDS_cache/` summarising all detected series, inferred subject/session IDs, file counts, and paths to cached slices
+- Prints a summary table of series found on completion
+- Is idempotent: re-running clears and rebuilds the staging and cache directories
+
+### `bids-label <bids_dir>`
+
+Opens the tkinter GUI loaded from the cached series data produced by `bids-sort`.
+
+- Reads `.simpleBIDS_cache/series_manifest.json`; errors clearly if `bids-sort` has not been run
+- Launches `gui.app` in label-only mode (no re-scanning): shows each series' cached image slice and metadata
+- User assigns `dataType` + `suffix` (and required entities) to each series via `gui.label_form`
+- User can review/override inferred subject and session IDs via `gui.study_config`
+- On completion, writes `<bids_dir>/code/dcm2bids_config.json` via `bids.config_builder`
+- Supports `--headless` flag that skips the GUI and applies heuristic auto-labeling only (for automated pipelines); outputs config and exits
+
+### `bids-convert <bids_dir>`
+
+Applies `dcm2bids_config.json` and converts staged data to BIDS format.
+
+- Reads `<bids_dir>/code/dcm2bids_config.json`; errors clearly if `bids-label` has not been run
+- For each subject/session found in the staging directory, invokes `dcm2bids` (preferred) or falls back to `dcm2niix` + internal renaming via `bids.converter`
+- Runs conversion per staging series directory for clean isolation
+- Writes converted files into the BIDS subject/session tree under `<bids_dir>`
+- On success, cleans up the staging directory (`.simpleBIDS_staging/`) and optionally the cache (`.simpleBIDS_cache/`) unless `--keep-staging` is passed
+- Prints per-subject conversion status; exits non-zero if any subject fails
+
+### `bids-update-participants <bids_dir>`
+
+Scans the BIDS project and synchronizes `participants.tsv` with what is actually present on disk.
+
+- Walks the BIDS subject/session tree and discovers all `sub-*` directories
+- For each subject/session, records: `participant_id`, `session_id`, detected image modalities (by datatype folder), and relative file paths to NIfTI files
+- Merges discovered records into `participants.tsv` via `bids.participants` without overwriting manually added columns (e.g., `age`, `sex`)
+- Adds new participants, updates existing rows for new sessions/modalities, and optionally flags (but does not delete) participants present in TSV but missing from disk
+- Prints a diff-style summary of additions and updates made
+
+---
+
 ## Out of Scope (for now)
 
 - MEG, EEG, iEEG support (scaffold for it, but do not implement parsers)

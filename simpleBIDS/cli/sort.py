@@ -22,26 +22,74 @@ _CACHE_DIRNAME = ".simpleBIDS_cache"
 _STAGING_DIRNAME = ".simpleBIDS_staging"
 _MANIFEST_NAME = "series_manifest.json"
 
+_WORKFLOW = """\
+simpleBIDS workflow (run in order):
+  1. bids-init <bids_dir>               — create a new BIDS project
+  2. bids-sort <bids_dir>               — scan sourcedata/, group series, build staging (this command)
+  3. bids-label <bids_dir>              — assign BIDS labels (GUI or --headless)
+  4. bids-convert <bids_dir>            — convert staged data to BIDS format
+  5. bids-update-participants <bids_dir>— sync participants.tsv with converted data
+"""
+
+_EXAMPLES = """\
+examples:
+  bids-sort /data/my_study
+"""
+
 
 def main(argv=None) -> None:
     configure_logging()
     parser = argparse.ArgumentParser(
         prog="bids-sort",
-        description="Scan sourcedata/, group series, and build the symlinked staging tree.",
+        description=(
+            "Step 2 of 5 — Scan sourcedata/, detect and group imaging series.\n\n"
+            "Walks <bids_dir>/sourcedata/, reads DICOM and NIfTI headers, and groups\n"
+            "files into per-series collections. For each series it:\n"
+            "  - Infers subject and session IDs from headers and file paths\n"
+            "  - Creates symlinked staging directories under .simpleBIDS_staging/\n"
+            "    so dcm2niix can run on one series at a time\n"
+            "  - Saves a representative PNG slice and metadata JSON per series\n"
+            "  - Writes .simpleBIDS_cache/series_manifest.json for bids-label\n\n"
+            "This command is idempotent: re-running clears and rebuilds staging and cache.\n\n"
+            "Requires: bids-init must have been run and sourcedata/ must be populated."
+        ),
+        epilog="\n".join([_WORKFLOW, _EXAMPLES]),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("bids_dir", help="Path to the BIDS project directory.")
+    parser.add_argument(
+        "bids_dir",
+        nargs="?",
+        help="Path to the BIDS project directory (created by bids-init).",
+    )
     args = parser.parse_args(argv)
+
+    if args.bids_dir is None:
+        parser.print_help()
+        print("\nERROR: bids_dir is required.", file=sys.stderr)
+        sys.exit(1)
 
     bids_root = Path(args.bids_dir).resolve()
     sourcedata = bids_root / "sourcedata"
 
     if not bids_root.exists():
-        print(f"ERROR: {bids_root} does not exist.", file=sys.stderr)
+        print(
+            f"ERROR: {bids_root} does not exist.\n"
+            f"Run 'bids-init {args.bids_dir}' to create the project first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not (bids_root / "dataset_description.json").exists():
+        print(
+            f"ERROR: {bids_root} does not look like a BIDS project "
+            "(dataset_description.json not found).\n"
+            f"Run 'bids-init {args.bids_dir}' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if not sourcedata.exists():
         print(
-            f"ERROR: {sourcedata} does not exist. "
-            "Run bids-init first, then place raw data in sourcedata/.",
+            f"ERROR: {sourcedata} does not exist.\n"
+            "Place your raw DICOM or NIfTI data in sourcedata/ before running bids-sort.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -59,7 +107,11 @@ def main(argv=None) -> None:
     series_groups = group_series(sourcedata)
 
     if not series_groups:
-        print("No DICOM or NIfTI series found in sourcedata/.")
+        print(
+            "No DICOM or NIfTI series found in sourcedata/.\n"
+            "Make sure your raw imaging files are placed inside sourcedata/ and are\n"
+            "readable DICOM (.dcm, .ima) or NIfTI (.nii, .nii.gz) files."
+        )
         sys.exit(0)
 
     # Infer subject/session for each group
@@ -100,8 +152,8 @@ def main(argv=None) -> None:
     print(f"\nFound {len(series_groups)} series:\n")
     _print_table(series_groups)
     print(f"\nManifest written to {cache_dir / _MANIFEST_NAME}")
-    print(f"Staging directory: {staging_root}")
-    print(f"\nRun: bids-label {bids_root}")
+    print(f"Staging directory:  {staging_root}")
+    print(f"\nNext step: bids-label {bids_root}")
 
 
 def _serialize_group(group: SeriesGroup, index: int) -> dict:
@@ -126,7 +178,6 @@ def _serialize_group(group: SeriesGroup, index: int) -> dict:
 
 def _save_png(pixels, path: Path) -> None:
     from PIL import Image
-    import numpy as np
 
     img = Image.fromarray(pixels.astype("uint8"))
     img.save(path)

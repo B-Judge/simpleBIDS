@@ -265,3 +265,128 @@ def test_place_nifti_files_skips_unmatched(tmp_path: Path) -> None:
     # Nothing placed — bids_root should not contain sub-* dirs
     sub_dirs = list(bids_root.glob("sub-*"))
     assert sub_dirs == []
+
+
+# ---------------------------------------------------------------------------
+# Full conversion loop — mock convert_subject
+# ---------------------------------------------------------------------------
+
+
+def test_convert_main_runs_convert_subject(tmp_path: Path) -> None:
+    """The main convert loop calls convert_subject for each subject/session."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+
+    # Set up staging dir that the manifest points to
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    with patch("simpleBIDS.cli.convert.convert_subject", return_value=True) as mock_conv:
+        convert_main([str(bids), "--keep-staging"])
+
+    assert mock_conv.called
+
+
+def test_convert_main_success_prints_summary(tmp_path: Path, capsys) -> None:
+    """Successful conversion prints a summary without errors."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    with patch("simpleBIDS.cli.convert.convert_subject", return_value=True):
+        convert_main([str(bids), "--keep-staging"])
+
+    captured = capsys.readouterr()
+    assert "successfully" in captured.out.lower() or "OK" in captured.out
+
+
+def test_convert_main_progress_callback_is_called(tmp_path: Path, capsys) -> None:
+    """The _msg closure (line 156) is exercised when convert_subject calls it."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    def _conv_with_callback(subject_id, session_id, staging_dir, bids_root,
+                             config_path, participants_path, *,
+                             progress_callback=None, **kwargs):
+        if progress_callback:
+            progress_callback(f"Processing sub-{subject_id}")
+        return True
+
+    with patch("simpleBIDS.cli.convert.convert_subject", side_effect=_conv_with_callback):
+        convert_main([str(bids), "--keep-staging"])
+
+    captured = capsys.readouterr()
+    assert "Processing" in captured.out
+
+
+def test_convert_main_failure_exits_nonzero(tmp_path: Path) -> None:
+    """When convert_subject returns False the CLI exits non-zero."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    with patch("simpleBIDS.cli.convert.convert_subject", return_value=False):
+        with pytest.raises(SystemExit) as exc_info:
+            convert_main([str(bids), "--keep-staging"])
+
+    assert exc_info.value.code != 0
+
+
+def test_convert_keep_staging_flag_preserves_directory(tmp_path: Path) -> None:
+    """--keep-staging prevents cleanup_staging from being called."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    with (
+        patch("simpleBIDS.cli.convert.convert_subject", return_value=True),
+        patch("simpleBIDS.cli.convert.cleanup_staging") as mock_cleanup,
+    ):
+        convert_main([str(bids), "--keep-staging"])
+
+    mock_cleanup.assert_not_called()
+
+
+def test_convert_without_keep_staging_calls_cleanup(tmp_path: Path) -> None:
+    """Without --keep-staging, cleanup_staging is called."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    with (
+        patch("simpleBIDS.cli.convert.convert_subject", return_value=True),
+        patch("simpleBIDS.cli.convert.cleanup_staging") as mock_cleanup,
+    ):
+        convert_main([str(bids)])
+
+    mock_cleanup.assert_called_once()

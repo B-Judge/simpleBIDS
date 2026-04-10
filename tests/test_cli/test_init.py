@@ -68,3 +68,30 @@ def test_init_authors_flag_not_present_bids_version_still_written(tmp_path: Path
     main([str(bids), "--name", "NoAuthors"])
     desc = json.loads((bids / "dataset_description.json").read_text())
     assert "BIDSVersion" in desc
+
+
+# ---------------------------------------------------------------------------
+# Interactive prompt (no --name flag)
+# ---------------------------------------------------------------------------
+
+
+def test_init_interactive_prompt_reads_name(tmp_path: Path) -> None:
+    """Without --name, init reads the dataset name from stdin via input()."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    with patch("builtins.input", return_value="My Dataset"):
+        main([str(bids)])
+    desc = json.loads((bids / "dataset_description.json").read_text())
+    assert desc["Name"] == "My Dataset"
+
+
+def test_init_interactive_prompt_eoferror_exits(tmp_path: Path) -> None:
+    """EOFError from input() causes CLI to exit non-zero (lines 93-95)."""
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    with patch("builtins.input", side_effect=EOFError):
+        with pytest.raises(SystemExit) as exc_info:
+            main([str(bids)])
+    assert exc_info.value.code != 0

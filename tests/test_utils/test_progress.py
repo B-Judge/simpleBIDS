@@ -160,3 +160,47 @@ def test_eta_str_at_completion() -> None:
     bar.total = 10
     eta = bar._eta_str()
     assert "00:00" in eta
+
+
+# ---------------------------------------------------------------------------
+# ProgressBar — TTY mode (_render_tty)
+# ---------------------------------------------------------------------------
+
+
+class _TtyFile(io.StringIO):
+    """StringIO that reports isatty() == True so ProgressBar uses _render_tty."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_progress_bar_tty_mode_uses_carriage_return() -> None:
+    out = _TtyFile()
+    bar = ProgressBar(total=10, file=out)
+    bar.update(5)
+    output = out.getvalue()
+    assert "\r" in output
+
+
+def test_progress_bar_tty_mode_shows_percentage() -> None:
+    out = _TtyFile()
+    bar = ProgressBar(total=10, file=out)
+    bar.update(5)
+    output = out.getvalue()
+    assert "50" in output or "%" in output
+
+
+def test_progress_bar_tty_close_shows_100() -> None:
+    out = _TtyFile()
+    with ProgressBar(total=4, file=out) as bar:
+        for i in range(1, 5):
+            bar.update(i)
+    output = out.getvalue()
+    assert "100%" in output
+
+
+def test_progress_bar_tty_label_in_output() -> None:
+    out = _TtyFile()
+    bar = ProgressBar(total=10, label="Scanning", file=out)
+    bar.update(3)
+    assert "Scanning" in out.getvalue()

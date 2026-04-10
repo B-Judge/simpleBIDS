@@ -230,3 +230,75 @@ def test_auto_label_fallback_when_no_suggestion(tmp_path: Path) -> None:
     assert len(labeled) == 1
     assert labeled[0].datatype is not None
     assert labeled[0].suffix is not None
+
+
+# ---------------------------------------------------------------------------
+# GUI import error path
+# ---------------------------------------------------------------------------
+
+
+def test_label_gui_import_error_exits_nonzero(tmp_path: Path) -> None:
+    """When the GUI module cannot be imported, the CLI exits non-zero (lines 123-134)."""
+    import sys
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _write_manifest(bids)
+
+    # Simulate a broken tkinter / gui.app module
+    broken_modules = {"simpleBIDS.gui.app": None}
+    with patch.dict(sys.modules, broken_modules):
+        with pytest.raises(SystemExit) as exc_info:
+            label_main([str(bids)])  # no --headless → tries GUI import
+
+    assert exc_info.value.code != 0
+
+
+def test_label_gui_cancelled_exits_zero(tmp_path: Path) -> None:
+    """When run_label_gui returns None (user cancelled), CLI exits 0 (lines 137-139)."""
+    from unittest.mock import patch, MagicMock
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _write_manifest(bids)
+
+    mock_gui_module = MagicMock()
+    mock_gui_module.run_label_gui = MagicMock(return_value=None)
+    import sys
+
+    with patch.dict(sys.modules, {"simpleBIDS.gui.app": mock_gui_module}):
+        with pytest.raises(SystemExit) as exc_info:
+            label_main([str(bids)])
+
+    assert exc_info.value.code == 0
+
+
+def test_label_gui_success_writes_config(tmp_path: Path) -> None:
+    """When run_label_gui returns labeled series, config is written (lines 141-144)."""
+    from unittest.mock import patch, MagicMock
+    from simpleBIDS.bids.config_builder import LabeledSeries
+    from simpleBIDS.patterns.series_grouper import SeriesGroup
+    import sys
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _write_manifest(bids)
+
+    group = SeriesGroup(
+        series_description="T1w_MPRAGE",
+        series_number=1,
+        modality="MR",
+        all_files=[],
+        representative_file=bids / "x.dcm",
+        file_count=5,
+    )
+    labeled = [LabeledSeries(series_group=group, datatype="anat", suffix="T1w")]
+
+    mock_gui_module = MagicMock()
+    mock_gui_module.run_label_gui = MagicMock(return_value=labeled)
+
+    with patch.dict(sys.modules, {"simpleBIDS.gui.app": mock_gui_module}):
+        label_main([str(bids)])
+
+    assert (bids / "code" / "dcm2bids_config.json").exists()

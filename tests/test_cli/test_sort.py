@@ -185,3 +185,61 @@ def test_sort_infers_subject_id(tmp_path: Path) -> None:
     for entry in manifest:
         assert entry["subject_id"] is not None
         assert entry["subject_id"] != ""
+
+
+def test_sort_verbose_flag_does_not_raise(tmp_path: Path) -> None:
+    """--verbose/-v flag enables DEBUG logging but must not raise."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _populate_sourcedata(bids / "sourcedata")
+    # Should complete without exception
+    sort_main([str(bids), "--verbose"])
+    assert (bids / ".simpleBIDS_cache" / "series_manifest.json").exists()
+
+
+def test_sort_exits_zero_when_no_series_found(tmp_path: Path) -> None:
+    """Empty sourcedata produces no series — CLI exits 0 (informational)."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    # sourcedata exists but is empty
+    (bids / "sourcedata").mkdir(exist_ok=True)
+    with pytest.raises(SystemExit) as exc_info:
+        sort_main([str(bids)])
+    assert exc_info.value.code == 0
+
+
+def test_sort_errors_if_bids_dir_does_not_exist(tmp_path: Path) -> None:
+    """Non-existent bids_dir exits non-zero (lines 98-103 in sort.py)."""
+    with pytest.raises(SystemExit) as exc_info:
+        sort_main([str(tmp_path / "nonexistent_dir")])
+    assert exc_info.value.code != 0
+
+
+def test_save_png_creates_file(tmp_path: Path) -> None:
+    """_save_png writes a valid PNG file (lines 228-231 in sort.py)."""
+    import numpy as np
+    from simpleBIDS.cli.sort import _save_png
+
+    pixels = np.zeros((32, 32), dtype=np.uint8)
+    out = tmp_path / "test.png"
+    _save_png(pixels, out)
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_sort_saves_slice_png_when_sample_slice_succeeds(tmp_path: Path) -> None:
+    """When sample_slice returns pixels, the PNG is saved (lines 178-179 in sort.py)."""
+    import numpy as np
+    from unittest.mock import patch
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _populate_sourcedata(bids / "sourcedata")
+
+    fake_pixels = np.zeros((32, 32), dtype=np.uint8)
+    with patch("simpleBIDS.cli.sort.sample_slice", return_value=fake_pixels):
+        sort_main([str(bids)])
+
+    cache_dir = bids / ".simpleBIDS_cache"
+    pngs = list(cache_dir.glob("*.png"))
+    assert len(pngs) > 0

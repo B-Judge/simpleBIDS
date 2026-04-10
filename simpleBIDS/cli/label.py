@@ -191,11 +191,17 @@ def _run_headless(
 def _group_from_entry(entry: dict) -> SeriesGroup:
     """Reconstruct a SeriesGroup from a manifest entry (paths as strings)."""
     all_files = [Path(f) for f in entry.get("all_files", [])]
-    rep = (
-        Path(entry["representative_file"])
-        if entry.get("representative_file")
-        else (all_files[0] if all_files else Path("."))
-    )
+    rep_str = entry.get("representative_file")
+    if rep_str:
+        rep = Path(rep_str)
+    elif all_files:
+        rep = all_files[0]
+    else:
+        logger.warning(
+            "Manifest entry '%s' has no file paths; representative_file set to '.'",
+            entry.get("series_description", "?"),
+        )
+        rep = Path(".")
     staging = Path(entry["staging_dir"]) if entry.get("staging_dir") else None
     return SeriesGroup(
         series_description=entry.get("series_description"),

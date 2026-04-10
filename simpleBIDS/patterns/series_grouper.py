@@ -176,9 +176,6 @@ def suggest_bids_labels(
 
     for pattern, datatype, suffix in _BIDS_RULES:
         if pattern.search(desc_norm):
-            # If suffix is undetermined, try to refine from ImageType
-            if suffix is None:
-                suffix = _refine_fmap_suffix(image_type_upper)
             return datatype, suffix
 
     # Temporal heuristic: many volumes → likely functional BOLD
@@ -287,7 +284,7 @@ def group_nifti_files(nifti_root: Path) -> list[SeriesGroup]:
         # Prefer sidecar SeriesDescription, fall back to filename stem
         desc = meta.series_description or _stem_without_gz(path)
         image_type: list[str] = []
-        file_count = 4 if len(meta.shape) == 4 and meta.shape[3] > 1 else 1
+        file_count = meta.shape[3] if len(meta.shape) == 4 and meta.shape[3] > 1 else 1
         n_vols = meta.shape[3] if len(meta.shape) == 4 else 1
 
         # Derive modality from sidecar MRAcquisitionType / Modality if present
@@ -304,7 +301,7 @@ def group_nifti_files(nifti_root: Path) -> list[SeriesGroup]:
             modality=modality,
             all_files=[path],
             representative_file=path,
-            file_count=1,
+            file_count=file_count,  # reflects temporal volumes for 4D NIfTI
             suggested_datatype=datatype,
             suggested_suffix=suffix,
             extra={"nifti_metadata": meta},

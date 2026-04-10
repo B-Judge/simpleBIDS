@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -88,22 +89,33 @@ def cleanup_staging(output_root: Path, *, staging_root: Path | None = None) -> N
 
 
 def _series_dir(staging_root: Path, group: SeriesGroup) -> Path:
-    """Return the per-series subdirectory path (not yet created)."""
-    parts: list[str] = []
-    if group.subject_id:
-        parts.append(group.subject_id)
-    if group.session_id:
-        parts.append(group.session_id)
-    parts.append(group.slug)
-    return staging_root / "_".join(parts)
+    """Return the per-series subdirectory path (not yet created).
+
+    Layout: ``<staging_root>/sub-<id>/ses-<id>/<slug>/``
+
+    Using a two-level hierarchy (subject → session → series) means that
+    ``series_dir.parent`` is the per-subject/session staging directory, which
+    is what ``dcm2niix`` and ``dcm2bids`` receive as ``--dicom_dir``.  This
+    prevents cross-subject contamination when converting multi-subject studies.
+    """
+    sub = f"sub-{group.subject_id}" if group.subject_id else "sub-unknown"
+    ses = f"ses-{group.session_id}" if group.session_id else "ses-unknown"
+    return staging_root / sub / ses / group.slug
 
 
 def _relative_target(link: Path, target: Path) -> Path:
-    """Compute a relative path from *link*'s parent to *target*."""
+    """Compute a relative path from *link*'s parent to *target*.
+
+    Uses :func:`os.path.relpath` so the result is always relative (the staging
+    tree is relocatable as long as source data moves with it).  Falls back to
+    an absolute symlink only when ``os.path.relpath`` itself raises (Windows
+    cross-drive paths; not applicable on Linux/macOS).
+    """
     try:
-        return Path(
-            "../" * len(link.parent.relative_to(link.parent).parts)
-        ) / target.resolve().relative_to(link.parent.resolve())
+        return Path(os.path.relpath(target.resolve(), link.parent.resolve()))
     except ValueError:
-        # Targets outside the tree — fall back to absolute symlink
+        logger.warning(
+            "Cannot compute relative path from %s to %s; using absolute symlink",
+            link.parent, target,
+        )
         return target.resolve()

@@ -170,7 +170,7 @@ def _collect_modalities(sub_dir: Path) -> set[str]:
 
 def _all_ids(table: ParticipantsTable) -> list[str]:
     """Return all participant IDs stored in the table."""
-    return list(table._records.keys())
+    return list(table)
 
 
 if __name__ == "__main__":

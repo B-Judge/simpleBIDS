@@ -283,8 +283,8 @@ def scan_dicom_directory(
 
     done = 0
 
-    def _read_first(path: Path) -> tuple[str, int, Path] | None:
-        """Return (series_key, instance_number, path) or None."""
+    def _read_first(path: Path) -> tuple[str, int, Path, dict] | None:
+        """Return (series_key, instance_number, path, raw_meta) or None."""
         try:
             ds = pydicom.dcmread(
                 str(path),

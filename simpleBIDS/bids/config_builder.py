@@ -78,9 +78,9 @@ def _build_criteria(ls: LabeledSeries) -> dict:
         criteria["SeriesNumber"] = group.series_number
 
     # Extra discriminating fields (e.g. ImageType) passed through from grouper
-    image_type = group.extra.get("image_type")
-    if image_type:
-        criteria["ImageType"] = image_type
+    dicom_meta = group.extra.get("dicom_metadata")
+    if dicom_meta is not None and dicom_meta.image_type:
+        criteria["ImageType"] = dicom_meta.image_type
 
     # Any additional user-supplied criteria
     criteria.update(ls.custom_criteria)

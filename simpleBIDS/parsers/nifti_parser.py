@@ -79,6 +79,11 @@ def _load_sidecar(nifti_path: Path) -> dict:
 
 def walk_nifti_directory(root: Path) -> list[Path]:
     """Recursively find all NIfTI files (``.nii``, ``.nii.gz``) under *root*."""
-    from simpleBIDS.utils.filesystem import iter_files
-
-    return list(iter_files(root, suffixes={".nii", ".gz"}))
+    result: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if name.endswith(".nii.gz") or name.endswith(".nii"):
+            result.append(path)
+    return result

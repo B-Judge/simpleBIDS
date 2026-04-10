@@ -144,8 +144,8 @@ def _run_dcm2niix_fallback(
 
     try:
         shutil.rmtree(tmp_out)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not remove temporary directory %s: %s", tmp_out, exc)
 
     return any_success
 

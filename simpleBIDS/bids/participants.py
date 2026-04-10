@@ -82,6 +82,10 @@ class ParticipantsTable:
     def __len__(self) -> int:
         return len(self._records)
 
+    def __iter__(self):
+        """Iterate over participant_id strings."""
+        return iter(self._records)
+
     @property
     def columns(self) -> list[str]:
         """Sorted union of all columns present across all records."""

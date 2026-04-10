@@ -152,7 +152,7 @@ def main(argv=None) -> None:
         print(f"[{i}/{n_total}]  {label}")
         t0 = time.monotonic()
 
-        def _msg(m: str, _label: str = label) -> None:
+        def _msg(m: str) -> None:
             print(f"         {m}")
 
         success = convert_subject(

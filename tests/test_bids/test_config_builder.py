@@ -149,11 +149,31 @@ def test_build_criteria_no_series_number_when_none(tmp_path: Path) -> None:
     assert "SeriesNumber" not in criteria
 
 
-def test_build_criteria_image_type_from_extra(tmp_path: Path) -> None:
-    group = _make_group(tmp_path, extra={"image_type": ["ORIGINAL", "PRIMARY", "M"]})
+def test_build_criteria_image_type_from_dicom_metadata(tmp_path: Path) -> None:
+    from simpleBIDS.parsers.dicom_parser import DicomMetadata
+    dicom_meta = DicomMetadata(
+        representative_file=tmp_path / "x.dcm",
+        file_count=5,
+        image_type=["ORIGINAL", "PRIMARY", "M"],
+    )
+    group = _make_group(tmp_path, extra={"dicom_metadata": dicom_meta})
     ls = LabeledSeries(series_group=group, datatype="anat", suffix="T1w")
     criteria = _build_criteria(ls)
     assert "ImageType" in criteria
+    assert criteria["ImageType"] == ["ORIGINAL", "PRIMARY", "M"]
+
+
+def test_build_criteria_no_image_type_when_empty(tmp_path: Path) -> None:
+    from simpleBIDS.parsers.dicom_parser import DicomMetadata
+    dicom_meta = DicomMetadata(
+        representative_file=tmp_path / "x.dcm",
+        file_count=5,
+        image_type=[],
+    )
+    group = _make_group(tmp_path, extra={"dicom_metadata": dicom_meta})
+    ls = LabeledSeries(series_group=group, datatype="anat", suffix="T1w")
+    criteria = _build_criteria(ls)
+    assert "ImageType" not in criteria
 
 
 def test_build_criteria_custom_criteria_merged(tmp_path: Path) -> None:

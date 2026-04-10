@@ -319,6 +319,108 @@ class App(tk.Tk):
             widget.destroy()
 
 
+def run_label_gui(
+    groups: list,
+    manifest: list[dict],
+    bids_root: Path,
+) -> list[LabeledSeries] | None:
+    """Launch a standalone series-labeling window and return the results.
+
+    This is the entry point called by the ``bids-label`` CLI command.  It
+    creates a minimal tkinter window that loops through *groups*, showing a
+    :class:`~simpleBIDS.gui.series_panel.SeriesPanel` and
+    :class:`~simpleBIDS.gui.label_form.LabelForm` for each series.
+
+    Args:
+        groups: :class:`~simpleBIDS.patterns.series_grouper.SeriesGroup` list
+            produced by :func:`~simpleBIDS.cli.label._group_from_entry`.
+        manifest: Raw manifest entry dicts from ``series_manifest.json``
+            (used for future slice-PNG lookup; currently unused directly).
+        bids_root: BIDS project root (reserved for session-cache writes).
+
+    Returns:
+        A list of :class:`~simpleBIDS.bids.config_builder.LabeledSeries` on
+        success, or ``None`` if the user closed the window before finishing.
+    """
+    result: list[LabeledSeries] = []
+    state = {"index": 0, "labeled": [], "cancelled": False}
+
+    root = tk.Tk()
+    root.title("simpleBIDS — Label Series")
+    root.resizable(True, True)
+    root.minsize(800, 600)
+
+    bar = ttk.Frame(root, relief=tk.RIDGE)
+    bar.pack(fill=tk.X, side=tk.TOP)
+    ttk.Label(bar, text="simpleBIDS — Label Series", font=("TkDefaultFont", 12, "bold")).pack(
+        side=tk.LEFT, padx=8, pady=4
+    )
+
+    content = ttk.Frame(root)
+    content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def _clear() -> None:
+        for widget in content.winfo_children():
+            widget.destroy()
+
+    def _show_next() -> None:
+        i = state["index"]
+        if i >= len(groups):
+            _finish()
+            return
+        _clear()
+        group = groups[i]
+        container = ttk.Frame(content)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        from simpleBIDS.gui.series_panel import SeriesPanel
+        from simpleBIDS.gui.label_form import LabelForm
+
+        SeriesPanel(container, series_group=group).pack(
+            fill=tk.BOTH, expand=True, side=tk.LEFT
+        )
+        LabelForm(
+            container,
+            series_group=group,
+            on_submit=_on_submit,
+            on_skip=_on_skip,
+            on_back=_on_back,
+            current=i + 1,
+            total=len(groups),
+        ).pack(fill=tk.BOTH, expand=True, side=tk.RIGHT)
+
+    def _on_submit(labeled: LabeledSeries) -> None:
+        state["labeled"].append(labeled)
+        state["index"] += 1
+        _show_next()
+
+    def _on_skip() -> None:
+        state["index"] += 1
+        _show_next()
+
+    def _on_back() -> None:
+        if state["index"] > 0:
+            state["index"] -= 1
+            if state["labeled"]:
+                state["labeled"].pop()
+        _show_next()
+
+    def _finish() -> None:
+        nonlocal result
+        result = list(state["labeled"])
+        root.destroy()
+
+    def _on_close() -> None:
+        state["cancelled"] = True
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
+    _show_next()
+    root.mainloop()
+
+    return None if state["cancelled"] else result
+
+
 def main() -> None:
     """CLI entry point (registered in pyproject.toml)."""
     configure_logging()

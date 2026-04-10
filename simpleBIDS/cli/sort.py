@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from simpleBIDS.inference.session_inference import infer_session
@@ -23,18 +24,39 @@ _CACHE_DIRNAME = ".simpleBIDS_cache"
 _STAGING_DIRNAME = ".simpleBIDS_staging"
 _MANIFEST_NAME = "series_manifest.json"
 
-_WORKFLOW = """\
-simpleBIDS workflow (run in order):
-  1. bids-init <bids_dir>               — create a new BIDS project
-  2. bids-sort <bids_dir>               — scan sourcedata/, group series, build staging (this command)
-  3. bids-label <bids_dir>              — assign BIDS labels (GUI or --headless)
-  4. bids-convert <bids_dir>            — convert staged data to BIDS format
-  5. bids-update-participants <bids_dir>— sync participants.tsv with converted data
+_DESCRIPTION = """\
+Step 2 of 5 — Scan sourcedata/ and prepare each series for conversion.
+
+Walks <bids_dir>/sourcedata/, reads DICOM and NIfTI headers, and groups all
+files into per-series collections. For each series it:
+
+  1. Reads headers to group files by series (SeriesInstanceUID / filename stem)
+  2. Infers subject and session IDs from DICOM tags and file-path patterns
+  3. Creates a symlinked staging directory under .simpleBIDS_staging/ so that
+     dcm2niix can run on one series at a time with no cross-series mixing
+  4. Extracts a representative PNG slice for display in the GUI
+  5. Writes .simpleBIDS_cache/series_manifest.json for use by bids-label
+
+Re-running this command is safe — it clears and rebuilds staging and cache.
+
+Prerequisite: run bids-init first and populate sourcedata/ with raw data.\
 """
 
-_EXAMPLES = """\
+_EPILOG = """\
+workflow:
+  1. bids-init <bids_dir>                  create a new BIDS project
+  2. bids-sort <bids_dir>                  [YOU ARE HERE] scan & stage series
+  3. bids-label <bids_dir>                 assign BIDS labels (GUI or --headless)
+  4. bids-convert <bids_dir>               convert staged data to BIDS format
+  5. bids-update-participants <bids_dir>   sync participants.tsv with output
+
+what comes next:
+  After bids-sort completes, run:
+    bids-label <bids_dir>
+
 examples:
   bids-sort /data/my_study
+  bids-sort /data/my_study --verbose\
 """
 
 
@@ -42,27 +64,27 @@ def main(argv=None) -> None:
     configure_logging()
     parser = argparse.ArgumentParser(
         prog="bids-sort",
-        description=(
-            "Step 2 of 5 — Scan sourcedata/, detect and group imaging series.\n\n"
-            "Walks <bids_dir>/sourcedata/, reads DICOM and NIfTI headers, and groups\n"
-            "files into per-series collections. For each series it:\n"
-            "  - Infers subject and session IDs from headers and file paths\n"
-            "  - Creates symlinked staging directories under .simpleBIDS_staging/\n"
-            "    so dcm2niix can run on one series at a time\n"
-            "  - Saves a representative PNG slice and metadata JSON per series\n"
-            "  - Writes .simpleBIDS_cache/series_manifest.json for bids-label\n\n"
-            "This command is idempotent: re-running clears and rebuilds staging and cache.\n\n"
-            "Requires: bids-init must have been run and sourcedata/ must be populated."
-        ),
-        epilog="\n".join([_WORKFLOW, _EXAMPLES]),
+        description=_DESCRIPTION,
+        epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "bids_dir",
         nargs="?",
-        help="Path to the BIDS project directory (created by bids-init).",
+        help=(
+            "Required. Path to the BIDS project directory created by bids-init. "
+            "sourcedata/ inside this directory will be scanned."
+        ),
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Print DEBUG-level messages from the DICOM scanner and grouper.",
     )
     args = parser.parse_args(argv)
+
+    if args.verbose:
+        logging.getLogger("simpleBIDS").setLevel(logging.DEBUG)
 
     if args.bids_dir is None:
         parser.print_help()
@@ -89,7 +111,7 @@ def main(argv=None) -> None:
         sys.exit(1)
     if not sourcedata.exists():
         print(
-            f"ERROR: {sourcedata} does not exist.\n"
+            f"ERROR: sourcedata/ not found at {sourcedata}\n"
             "Place your raw DICOM or NIfTI data in sourcedata/ before running bids-sort.",
             file=sys.stderr,
         )
@@ -104,31 +126,47 @@ def main(argv=None) -> None:
             shutil.rmtree(d)
         d.mkdir(parents=True)
 
-    # --- Phase 1: scan and group series ------------------------------------
-    print(f"Scanning {sourcedata} …")
+    # ── Phase 1: scan and group series ───────────────────────────────────────
+    _banner("Phase 1/4 — Scanning source data")
+    t0 = time.monotonic()
     with ProgressBar(label="Reading files") as scan_bar:
         series_groups = group_series(sourcedata, progress_callback=scan_bar.update)
+    print(f"  Found {len(series_groups)} series  ({time.monotonic() - t0:.1f}s)")
 
     if not series_groups:
         print(
-            "No DICOM or NIfTI series found in sourcedata/.\n"
-            "Make sure your raw imaging files are placed inside sourcedata/ and are\n"
+            "\nNo DICOM or NIfTI series found in sourcedata/.\n"
+            "Make sure your raw imaging files are inside sourcedata/ and are\n"
             "readable DICOM (.dcm, .ima) or NIfTI (.nii, .nii.gz) files."
         )
         sys.exit(0)
 
-    # --- Phase 2: infer subject/session and build staging ------------------
-    print(f"Building staging tree for {len(series_groups)} series …")
-    for group in series_groups:
-        meta = group.extra.get("dicom_metadata")
-        group.subject_id = infer_subject(meta, group.representative_file)
-        group.session_id = infer_session(meta, group.representative_file)
+    # ── Phase 2: infer subject and session IDs ───────────────────────────────
+    _banner("Phase 2/4 — Inferring subject and session identifiers")
+    t0 = time.monotonic()
+    with ProgressBar(total=len(series_groups), label="Inferring IDs") as infer_bar:
+        for i, group in enumerate(series_groups):
+            meta = group.extra.get("dicom_metadata")
+            group.subject_id = infer_subject(meta, group.representative_file)
+            group.session_id = infer_session(meta, group.representative_file)
+            infer_bar.update(i + 1)
+    print(f"  Done  ({time.monotonic() - t0:.1f}s)")
 
+    # ── Phase 3: build symlinked staging tree ─────────────────────────────────
+    _banner("Phase 3/4 — Building staging directories")
+    t0 = time.monotonic()
     with ProgressBar(total=len(series_groups), label="Staging series") as stage_bar:
-        build_staging(series_groups, bids_root, staging_root=staging_root)
-        stage_bar.update(len(series_groups))
+        build_staging(
+            series_groups,
+            bids_root,
+            staging_root=staging_root,
+            progress_callback=stage_bar.update,
+        )
+    print(f"  Staging root: {staging_root}  ({time.monotonic() - t0:.1f}s)")
 
-    # --- Phase 3: cache representative slices and metadata -----------------
+    # ── Phase 4: cache representative slices and metadata ────────────────────
+    _banner("Phase 4/4 — Extracting preview slices and writing manifest")
+    t0 = time.monotonic()
     manifest: list[dict] = []
     with ProgressBar(total=len(series_groups), label="Caching slices") as cache_bar:
         for i, group in enumerate(series_groups):
@@ -140,25 +178,30 @@ def main(argv=None) -> None:
                 _save_png(pixels, slice_path)
                 entry["slice_png"] = str(slice_path)
             except Exception as exc:
-                logger.warning("Could not extract slice for series %d: %s", i, exc)
+                logger.debug("Could not extract slice for series %d: %s", i, exc)
                 entry["slice_png"] = None
 
             meta_path = cache_dir / f"series_{i:04d}.json"
             meta_path.write_text(json.dumps(entry, indent=2, default=str), encoding="utf-8")
-
             manifest.append(entry)
             cache_bar.update(i + 1)
 
     (cache_dir / _MANIFEST_NAME).write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"
     )
+    print(f"  Manifest: {cache_dir / _MANIFEST_NAME}  ({time.monotonic() - t0:.1f}s)")
 
-    # Summary table
-    print(f"\nFound {len(series_groups)} series:\n")
+    # ── Summary table ─────────────────────────────────────────────────────────
+    print(f"\n{'─' * 72}")
+    print(f"  {len(series_groups)} series detected:\n")
     _print_table(series_groups)
-    print(f"\nManifest written to {cache_dir / _MANIFEST_NAME}")
-    print(f"Staging directory:  {staging_root}")
-    print(f"\nNext step: bids-label {bids_root}")
+    print(f"\n{'─' * 72}")
+    print(f"\nNext step:  bids-label {bids_root}\n")
+
+
+def _banner(text: str) -> None:
+    print(f"\n{text}")
+    print("─" * len(text))
 
 
 def _serialize_group(group: SeriesGroup, index: int) -> dict:
@@ -189,14 +232,25 @@ def _save_png(pixels, path: Path) -> None:
 
 
 def _print_table(groups: list[SeriesGroup]) -> None:
-    header = f"{'#':>4}  {'Subject':<12}  {'Session':<12}  {'Modality':<8}  {'Files':>6}  {'Description'}"
+    col_sub = 12
+    col_ses = 12
+    col_mod = 8
+    col_files = 6
+    header = (
+        f"  {'#':>4}  {'Subject':<{col_sub}}  {'Session':<{col_ses}}  "
+        f"{'Mod':<{col_mod}}  {'Files':>{col_files}}  Description"
+    )
     print(header)
-    print("-" * len(header))
+    print(f"  {'-' * (len(header) - 2)}")
     for i, g in enumerate(groups):
-        desc = (g.series_description or "")[:48]
+        desc = (g.series_description or "—")[:52]
+        loc_flag = " [localizer]" if g.is_localizer else ""
         print(
-            f"{i:>4}  {(g.subject_id or ''):<12}  {(g.session_id or ''):<12}  "
-            f"{(g.modality or ''):<8}  {g.file_count:>6}  {desc}"
+            f"  {i:>4}  {(g.subject_id or '—'):<{col_sub}}  "
+            f"{(g.session_id or '—'):<{col_ses}}  "
+            f"{(g.modality or '—'):<{col_mod}}  "
+            f"{g.file_count:>{col_files}}  "
+            f"{desc}{loc_flag}"
         )
 
 

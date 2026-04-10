@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from simpleBIDS.patterns.series_grouper import SeriesGroup
 
@@ -18,6 +19,7 @@ def build_staging(
     output_root: Path,
     *,
     staging_root: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[int, Path]:
     """Create symlinked staging subdirectories for each series.
 
@@ -45,8 +47,9 @@ def build_staging(
     logger.info("Building staging directory at %s", staging_root)
 
     result: dict[int, Path] = {}
+    total = len(series_groups)
 
-    for group in series_groups:
+    for i, group in enumerate(series_groups):
         series_dir = _series_dir(staging_root, group)
         series_dir.mkdir(parents=True, exist_ok=True)
 
@@ -62,6 +65,9 @@ def build_staging(
         group.staging_dir = series_dir
         result[id(group)] = series_dir
         logger.debug("Staged %d files → %s", group.file_count, series_dir)
+
+        if progress_callback is not None:
+            progress_callback(i + 1, total)
 
     return result
 

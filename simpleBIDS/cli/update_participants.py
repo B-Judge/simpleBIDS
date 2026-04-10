@@ -13,18 +13,41 @@ from simpleBIDS.utils.progress import ProgressBar
 
 logger = logging.getLogger(__name__)
 
-_WORKFLOW = """\
-simpleBIDS workflow (run in order):
-  1. bids-init <bids_dir>               — create a new BIDS project
-  2. bids-sort <bids_dir>               — scan sourcedata/, group series, build staging
-  3. bids-label <bids_dir>              — assign BIDS labels (GUI or --headless)
-  4. bids-convert <bids_dir>            — convert staged data to BIDS format
-  5. bids-update-participants <bids_dir>— sync participants.tsv with converted data (this command)
+_DESCRIPTION = """\
+Step 5 of 5 — Synchronize participants.tsv with converted data on disk.
+
+Walks all sub-* directories in the BIDS project and merges each discovered
+participant into participants.tsv:
+
+  +  New sub-* directories are added as new rows
+  ~  Existing rows are updated with current modality information
+     (e.g. 'anat dwi func' — derived from BIDS datatype folder names)
+  ?  Participants in the TSV but absent on disk are flagged with a warning
+     and left in place — they are never deleted automatically
+
+Custom columns added manually (age, sex, group, …) are preserved; this
+command never overwrites values it did not write itself.
+
+Safe to run multiple times — already-present participants are updated, not
+duplicated.
+
+Prerequisite: run bids-convert first to produce sub-* output directories.\
 """
 
-_EXAMPLES = """\
+_EPILOG = """\
+workflow:
+  1. bids-init <bids_dir>                  create a new BIDS project
+  2. bids-sort <bids_dir>                  scan & stage series
+  3. bids-label <bids_dir>                 assign BIDS labels
+  4. bids-convert <bids_dir>               convert staged data to BIDS format
+  5. bids-update-participants <bids_dir>   [YOU ARE HERE] sync participants.tsv
+
+what comes next:
+  Your BIDS dataset is ready. Run the BIDS Validator to check it:
+    https://bids-standard.github.io/bids-validator/
+
 examples:
-  bids-update-participants /data/my_study
+  bids-update-participants /data/my_study\
 """
 
 
@@ -32,27 +55,17 @@ def main(argv=None) -> None:
     configure_logging()
     parser = argparse.ArgumentParser(
         prog="bids-update-participants",
-        description=(
-            "Step 5 of 5 — Synchronize participants.tsv with converted data on disk.\n\n"
-            "Walks all sub-* directories in the BIDS project root and merges each\n"
-            "discovered participant into participants.tsv:\n\n"
-            "  - Adds rows for newly found sub-* directories\n"
-            "  - Updates existing rows with current modality information\n"
-            "  - Preserves manually added columns (e.g. age, sex, group) — never overwrites them\n"
-            "  - Warns about participants present in the TSV but missing from disk\n"
-            "    (flags with '?' but does NOT delete them)\n\n"
-            "The modalities column lists BIDS datatype folders found under each subject\n"
-            "(e.g. 'anat dwi func'). Session-level datatype folders are also collected.\n\n"
-            "Safe to run multiple times — idempotent for already-present participants.\n\n"
-            "Requires: bids-convert must have been run to produce sub-* output directories."
-        ),
-        epilog="\n".join([_WORKFLOW, _EXAMPLES]),
+        description=_DESCRIPTION,
+        epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "bids_dir",
         nargs="?",
-        help="Path to the BIDS project directory (created by bids-init).",
+        help=(
+            "Required. Path to the BIDS project directory (created by bids-init). "
+            "sub-* directories produced by bids-convert must be present."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -82,9 +95,6 @@ def main(argv=None) -> None:
     tsv_path = bids_root / "participants.tsv"
     table = ParticipantsTable.load(tsv_path)
 
-    added: list[str] = []
-    updated: list[str] = []
-
     sub_dirs = sorted(d for d in bids_root.glob("sub-*") if d.is_dir())
     if not sub_dirs:
         print(
@@ -93,6 +103,10 @@ def main(argv=None) -> None:
         )
         sys.exit(0)
 
+    added: list[str] = []
+    updated: list[str] = []
+
+    print(f"\nScanning {len(sub_dirs)} subject director{'y' if len(sub_dirs) == 1 else 'ies'} …\n")
     with ProgressBar(total=len(sub_dirs), label="Scanning subjects") as scan_bar:
         for i, sub_dir in enumerate(sub_dirs, 1):
             participant_id = sub_dir.name  # e.g. "sub-001"
@@ -111,26 +125,33 @@ def main(argv=None) -> None:
 
     table.save(tsv_path)
 
-    # Summary
-    print(f"participants.tsv updated: {tsv_path}")
-    print(f"  Added:   {len(added)}")
-    for pid in added:
-        print(f"    + {pid}")
-    print(f"  Updated: {len(updated)}")
-    for pid in updated:
-        print(f"    ~ {pid}")
-    print(f"  Total:   {len(table)} participant(s)")
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print(f"\nparticipants.tsv updated: {tsv_path}\n")
+
+    if added:
+        print(f"  Added ({len(added)}):")
+        for pid in added:
+            print(f"    + {pid}")
+    if updated:
+        print(f"  Updated ({len(updated)}):")
+        for pid in updated:
+            print(f"    ~ {pid}")
+
+    print(f"\n  Total: {len(table)} participant(s)")
 
     # Flag participants in TSV missing from disk
     on_disk = {d.name for d in sub_dirs}
     missing = [pid for pid in _all_ids(table) if pid not in on_disk]
     if missing:
         print(
-            f"\nWARNING: {len(missing)} participant(s) present in participants.tsv "
+            f"\n  WARNING: {len(missing)} participant(s) in participants.tsv "
             "but not found on disk (not removed):"
         )
         for pid in missing:
             print(f"    ? {pid}")
+
+    print(f"\nYour BIDS dataset is ready at {bids_root}")
+    print("Run the BIDS Validator to verify:  https://bids-standard.github.io/bids-validator/\n")
 
 
 def _collect_modalities(sub_dir: Path) -> set[str]:

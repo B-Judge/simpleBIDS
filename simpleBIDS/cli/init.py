@@ -9,19 +9,38 @@ from pathlib import Path
 from simpleBIDS.bids.scaffold import scaffold_bids
 from simpleBIDS.utils.logging import configure_logging
 
-_WORKFLOW = """\
-simpleBIDS workflow (run in order):
-  1. bids-init <bids_dir>               — create a new BIDS project (this command)
-  2. bids-sort <bids_dir>               — scan sourcedata/, group series, build staging
-  3. bids-label <bids_dir>              — assign BIDS labels (GUI or --headless)
-  4. bids-convert <bids_dir>            — convert staged data to BIDS format
-  5. bids-update-participants <bids_dir>— sync participants.tsv with converted data
+_DESCRIPTION = """\
+Step 1 of 5 — Create a new BIDS project directory.
+
+Scaffolds the standard BIDS top-level structure at <bids_dir>:
+
+  dataset_description.json   study metadata (name, authors, BIDS version)
+  participants.tsv            subject registry (grows as data is converted)
+  participants.json           column definitions for participants.tsv
+  README                      free-text project notes
+  .bidsignore                 patterns excluded from BIDS validation
+  code/                       scripts and conversion configs (dcm2bids_config.json)
+  derivatives/                processed outputs (not raw data)
+  sourcedata/                 drop your raw DICOM or NIfTI data here
+
+After running this command, place your raw data in sourcedata/ then run bids-sort.\
 """
 
-_EXAMPLES = """\
+_EPILOG = """\
+workflow:
+  1. bids-init <bids_dir>                  [YOU ARE HERE] create a new BIDS project
+  2. bids-sort <bids_dir>                  scan & stage series
+  3. bids-label <bids_dir>                 assign BIDS labels (GUI or --headless)
+  4. bids-convert <bids_dir>               convert staged data to BIDS format
+  5. bids-update-participants <bids_dir>   sync participants.tsv with output
+
+what comes next:
+  1. Place raw DICOM or NIfTI files inside <bids_dir>/sourcedata/
+  2. Run:  bids-sort <bids_dir>
+
 examples:
   bids-init /data/my_study
-  bids-init /data/my_study --name "Resting State Cohort 2024"
+  bids-init /data/my_study --name "Resting State Cohort 2024"\
 """
 
 
@@ -29,30 +48,23 @@ def main(argv=None) -> None:
     configure_logging()
     parser = argparse.ArgumentParser(
         prog="bids-init",
-        description=(
-            "Step 1 of 5 — Create a new BIDS project directory.\n\n"
-            "Scaffolds the standard BIDS top-level structure:\n"
-            "  dataset_description.json, participants.tsv, participants.json,\n"
-            "  README, .bidsignore, and the code/, derivatives/, sourcedata/ folders.\n\n"
-            "After running this command, place your raw neuroimaging data\n"
-            "(DICOM or NIfTI) inside the sourcedata/ subdirectory, then run bids-sort."
-        ),
-        epilog="\n".join([_WORKFLOW, _EXAMPLES]),
+        description=_DESCRIPTION,
+        epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "bids_dir",
         nargs="?",
         help=(
-            "Path where the BIDS project will be created. "
-            "The directory will be made if it does not exist."
+            "Required. Path where the BIDS project will be created. "
+            "The directory (and its parents) will be made if they do not exist."
         ),
     )
     parser.add_argument(
         "--name",
         metavar="DATASET_NAME",
         help=(
-            "Dataset name written into dataset_description.json. "
+            "Dataset name written to dataset_description.json. "
             "If omitted, you will be prompted interactively."
         ),
     )
@@ -69,7 +81,7 @@ def main(argv=None) -> None:
         print(
             f"ERROR: {bids_root} already contains a BIDS project "
             "(dataset_description.json exists).\n"
-            "To start fresh, remove the directory first or choose a different path.",
+            "Choose a different path or remove the directory to start fresh.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -82,11 +94,21 @@ def main(argv=None) -> None:
             print("\nAborted.", file=sys.stderr)
             sys.exit(1)
 
+    print(f"\nCreating BIDS project at {bids_root} …")
     scaffold_bids(bids_root, dataset_name=dataset_name)
-    print(f"BIDS project created at {bids_root}")
-    print(f"\nNext steps:")
-    print(f"  1. Place raw neuroimaging data in: {bids_root / 'sourcedata'}")
-    print(f"  2. Run: bids-sort {bids_root}")
+
+    print(f"  dataset_description.json   ← Name: \"{dataset_name}\"")
+    print(f"  participants.tsv")
+    print(f"  participants.json")
+    print(f"  README")
+    print(f"  .bidsignore")
+    print(f"  code/")
+    print(f"  derivatives/")
+    print(f"  sourcedata/               ← place raw data here")
+    print(f"\nBIDS project ready.\n")
+    print(f"Next steps:")
+    print(f"  1. Copy your raw DICOM or NIfTI data into:  {bids_root / 'sourcedata'}")
+    print(f"  2. Run:  bids-sort {bids_root}\n")
 
 
 if __name__ == "__main__":

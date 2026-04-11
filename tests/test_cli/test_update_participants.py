@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
 
 from simpleBIDS.cli.init import main as init_main
-from simpleBIDS.cli.update_participants import main as update_main, _collect_modalities
+from simpleBIDS.cli.update_participants import (
+    main as update_main,
+    _collect_modalities,
+    _collect_sessions,
+    _update_sessions_tsv,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +172,116 @@ def test_collect_modalities_empty_subject(tmp_path: Path) -> None:
     sub.mkdir()
     mods = _collect_modalities(sub)
     assert mods == set()
+
+
+# ---------------------------------------------------------------------------
+# _collect_sessions helper (Issue 3)
+# ---------------------------------------------------------------------------
+
+
+def test_collect_sessions_returns_session_tuples(tmp_path: Path) -> None:
+    """_collect_sessions returns (session_id, modalities) tuples for each ses-* dir."""
+    sub = tmp_path / "sub-001"
+    (sub / "ses-01" / "anat").mkdir(parents=True)
+    (sub / "ses-01" / "func").mkdir(parents=True)
+    (sub / "ses-02" / "dwi").mkdir(parents=True)
+    sessions = _collect_sessions(sub)
+    assert len(sessions) == 2
+    session_ids = [s[0] for s in sessions]
+    assert "ses-01" in session_ids
+    assert "ses-02" in session_ids
+    ses01_mods = next(mods for sid, mods in sessions if sid == "ses-01")
+    assert "anat" in ses01_mods
+    assert "func" in ses01_mods
+
+
+def test_collect_sessions_empty_when_no_sessions(tmp_path: Path) -> None:
+    """_collect_sessions returns empty list when no ses-* directories exist."""
+    sub = tmp_path / "sub-001"
+    (sub / "anat").mkdir(parents=True)
+    sessions = _collect_sessions(sub)
+    assert sessions == []
+
+
+# ---------------------------------------------------------------------------
+# _update_sessions_tsv helper (Issue 3)
+# ---------------------------------------------------------------------------
+
+
+def test_update_sessions_tsv_creates_file(tmp_path: Path) -> None:
+    """_update_sessions_tsv creates a sessions.tsv for the subject."""
+    sub = tmp_path / "sub-001"
+    sub.mkdir()
+    sessions = [("ses-01", {"anat"}), ("ses-02", {"func"})]
+    _update_sessions_tsv(sub, sessions)
+    tsv_path = sub / "sub-001_sessions.tsv"
+    assert tsv_path.exists()
+    content = tsv_path.read_text()
+    assert "ses-01" in content
+    assert "ses-02" in content
+    assert "anat" in content
+    assert "func" in content
+
+
+def test_update_sessions_tsv_preserves_extra_columns(tmp_path: Path) -> None:
+    """Existing user-added columns in sessions.tsv are preserved on update."""
+    sub = tmp_path / "sub-001"
+    sub.mkdir()
+    tsv_path = sub / "sub-001_sessions.tsv"
+    # Pre-populate with a custom acq_time column
+    tsv_path.write_text(
+        "session_id\tmodalities\tacq_time\nses-01\tanat\t2023-01-01T10:00:00\n",
+        encoding="utf-8",
+    )
+    sessions = [("ses-01", {"anat"}), ("ses-02", {"func"})]
+    _update_sessions_tsv(sub, sessions)
+    content = tsv_path.read_text()
+    assert "acq_time" in content
+    assert "2023-01-01T10:00:00" in content
+
+
+def test_update_sessions_tsv_idempotent(tmp_path: Path) -> None:
+    """Calling _update_sessions_tsv twice produces the same number of rows."""
+    sub = tmp_path / "sub-001"
+    sub.mkdir()
+    sessions = [("ses-01", {"anat"}), ("ses-02", {"func"})]
+    _update_sessions_tsv(sub, sessions)
+    _update_sessions_tsv(sub, sessions)
+    tsv_path = sub / "sub-001_sessions.tsv"
+    with tsv_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    # Should be exactly 2 data rows (one per session), not 4
+    assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# Integration: sessions.tsv written by bids-update-participants (Issue 3)
+# ---------------------------------------------------------------------------
+
+
+def test_update_creates_sessions_tsv_for_multi_session(tmp_path: Path) -> None:
+    """bids-update-participants creates sessions.tsv for multi-session subjects."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    sub_dir = bids / "sub-001"
+    (sub_dir / "ses-01" / "anat").mkdir(parents=True)
+    (sub_dir / "ses-02" / "func").mkdir(parents=True)
+    update_main([str(bids)])
+    tsv_path = sub_dir / "sub-001_sessions.tsv"
+    assert tsv_path.exists(), "sessions.tsv must be created for multi-session subject"
+    content = tsv_path.read_text()
+    assert "ses-01" in content
+    assert "ses-02" in content
+
+
+def test_update_no_sessions_tsv_for_single_session(tmp_path: Path) -> None:
+    """bids-update-participants does NOT create sessions.tsv for single-session subjects."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    sub_dir = bids / "sub-001"
+    (sub_dir / "ses-01" / "anat").mkdir(parents=True)
+    update_main([str(bids)])
+    tsv_path = sub_dir / "sub-001_sessions.tsv"
+    assert not tsv_path.exists(), (
+        "sessions.tsv must NOT be created when there is only one session"
+    )

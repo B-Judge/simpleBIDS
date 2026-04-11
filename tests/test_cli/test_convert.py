@@ -390,3 +390,122 @@ def test_convert_without_keep_staging_calls_cleanup(tmp_path: Path) -> None:
         convert_main([str(bids)])
 
     mock_cleanup.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _match_description — regex support (Issue 7)
+# ---------------------------------------------------------------------------
+
+
+def test_match_description_regex_pattern() -> None:
+    """Regex patterns in SeriesDescription criteria are matched with re.search."""
+    from simpleBIDS.bids.converter import _match_description
+
+    descriptions = [
+        {"datatype": "anat", "suffix": "T1w", "criteria": {"SeriesDescription": "T1w.*MPRAGE"}},
+        {"datatype": "func", "suffix": "bold", "criteria": {"SeriesDescription": "BOLD"}},
+    ]
+    result = _match_description("T1w_3D_MPRAGE", descriptions)
+    assert result is not None
+    assert result["suffix"] == "T1w"
+
+
+def test_match_description_invalid_regex_falls_back_to_substring() -> None:
+    """An invalid regex pattern falls back to a case-insensitive substring match."""
+    from simpleBIDS.bids.converter import _match_description
+
+    # Use two descriptions so the single-item fallback doesn't mask behaviour.
+    # "[T1w" is not valid regex; "BOLD" is valid regex.
+    descriptions = [
+        {"datatype": "anat", "suffix": "T1w", "criteria": {"SeriesDescription": "[T1w"}},
+        {"datatype": "func", "suffix": "bold", "criteria": {"SeriesDescription": "BOLD"}},
+    ]
+
+    # "BOLD_rest" does NOT contain the literal "[T1w" substring → no match for T1w entry
+    # but DOES match the valid BOLD regex → returns the func/bold entry
+    result_bold = _match_description("BOLD_rest", descriptions)
+    assert result_bold is not None
+    assert result_bold["suffix"] == "bold"
+
+    # "[T1w_MPRAGE" contains the literal "[T1w" substring → T1w entry matches via fallback
+    result_t1w = _match_description("[T1w_MPRAGE", descriptions)
+    assert result_t1w is not None
+    assert result_t1w["suffix"] == "T1w"
+
+
+# ---------------------------------------------------------------------------
+# Partial-failure recovery helpers (Issue 5)
+# ---------------------------------------------------------------------------
+
+
+def test_load_status_returns_empty_when_file_missing(tmp_path: Path) -> None:
+    """_load_status returns an empty set when no status file exists."""
+    from simpleBIDS.cli.convert import _load_status
+
+    result = _load_status(tmp_path)
+    assert result == set()
+
+
+def test_save_and_load_status_roundtrip(tmp_path: Path) -> None:
+    """_save_status writes a file that _load_status can read back."""
+    from simpleBIDS.cli.convert import _load_status, _save_status
+
+    completed = {("001", "20230101"), ("002", "20230202")}
+    _save_status(tmp_path, completed)
+    loaded = _load_status(tmp_path)
+    assert loaded == completed
+
+
+def test_load_status_returns_empty_on_malformed_file(tmp_path: Path) -> None:
+    """_load_status returns empty set if the status file contains bad JSON."""
+    from simpleBIDS.cli.convert import _load_status
+
+    (tmp_path / "conversion_status.json").write_text("{ broken json !!!")
+    result = _load_status(tmp_path)
+    assert result == set()
+
+
+def test_convert_skips_already_completed_subjects(tmp_path: Path) -> None:
+    """Subjects already in the status file are skipped (not passed to convert_subject)."""
+    from unittest.mock import patch
+    from simpleBIDS.cli.convert import _save_status
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    # Mark the subject as already done
+    cache_dir = bids / ".simpleBIDS_cache"
+    _save_status(cache_dir, {("001", "20230101")})
+
+    with patch("simpleBIDS.cli.convert.convert_subject", return_value=True) as mock_conv:
+        convert_main([str(bids), "--keep-staging"])
+
+    # convert_subject should NOT have been called (subject was already done)
+    mock_conv.assert_not_called()
+
+
+def test_force_flag_ignores_existing_status(tmp_path: Path) -> None:
+    """--force causes already-completed subjects to be re-converted."""
+    from unittest.mock import patch
+    from simpleBIDS.cli.convert import _save_status
+
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    staging = bids / ".simpleBIDS_staging" / "sub001_ses01"
+    staging.mkdir(parents=True)
+    _write_manifest(bids, staging_dir=staging)
+    _write_config(bids)
+
+    # Mark the subject as already done
+    cache_dir = bids / ".simpleBIDS_cache"
+    _save_status(cache_dir, {("001", "20230101")})
+
+    with patch("simpleBIDS.cli.convert.convert_subject", return_value=True) as mock_conv:
+        convert_main([str(bids), "--keep-staging", "--force"])
+
+    # With --force, convert_subject SHOULD be called despite prior status
+    mock_conv.assert_called_once()

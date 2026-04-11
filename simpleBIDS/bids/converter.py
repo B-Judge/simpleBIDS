@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -209,17 +210,26 @@ def _place_nifti_files(
 
 
 def _match_description(stem: str, descriptions: list[dict]) -> dict | None:
-    """Return the first config description whose ``SeriesDescription`` is a
-    case-insensitive substring of *stem*, or ``None`` if no match is found.
+    """Return the first config description whose ``SeriesDescription`` matches *stem*.
 
-    If only one description is present, it is returned unconditionally as a
+    Matching uses ``re.search`` so that dcm2bids-style regex criteria work in
+    the fallback path (e.g. ``"T1w.*MPRAGE"``).  If the criterion is not a
+    valid regex, falls back to case-insensitive substring containment.
+
+    If only one description is present it is returned unconditionally as a
     last-resort fallback.
     """
-    stem_lower = stem.lower()
     for desc in descriptions:
         series_desc = desc.get("criteria", {}).get("SeriesDescription", "")
-        if series_desc and series_desc.lower() in stem_lower:
-            return desc
+        if not series_desc:
+            continue
+        try:
+            if re.search(series_desc, stem, re.IGNORECASE):
+                return desc
+        except re.error:
+            # criterion is not a valid regex — fall back to substring match
+            if series_desc.lower() in stem.lower():
+                return desc
     if len(descriptions) == 1:
         return descriptions[0]
     return None

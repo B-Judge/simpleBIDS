@@ -96,3 +96,40 @@ def test_walk_nifti_directory_empty(tmp_path):
 
     results = walk_nifti_directory(tmp_path)
     assert results == []
+
+
+def test_walk_nifti_directory_excludes_non_nifti_gz(tmp_path):
+    """Non-NIfTI .gz files (e.g. .tar.gz) must not be returned."""
+    from simpleBIDS.parsers.nifti_parser import walk_nifti_directory
+
+    _make_nifti(tmp_path / "scan.nii")
+    (tmp_path / "archive.tar.gz").write_bytes(b"fake tar")
+    (tmp_path / "data.json.gz").write_bytes(b"fake gz")
+    results = walk_nifti_directory(tmp_path)
+    names = [p.name for p in results]
+    assert "scan.nii" in names
+    assert "archive.tar.gz" not in names
+    assert "data.json.gz" not in names
+
+
+def test_load_sidecar_nii_gz_uses_correct_path(tmp_path):
+    """Sidecar for .nii.gz should be foo.json, NOT foo.nii.json."""
+    import nibabel as nib
+    import numpy as np
+    from simpleBIDS.parsers.nifti_parser import parse_nifti
+
+    data = np.zeros((10, 10, 5), dtype=np.int16)
+    nii_gz = tmp_path / "sub-001_T1w.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), str(nii_gz))
+
+    # Write sidecar at the correct location (foo.json)
+    correct_sidecar = tmp_path / "sub-001_T1w.json"
+    correct_sidecar.write_text('{"RepetitionTime": 3.0}', encoding="utf-8")
+
+    # Make sure the wrong path doesn't shadow the correct one
+    wrong_sidecar = tmp_path / "sub-001_T1w.nii.json"
+    wrong_sidecar.write_text('{"RepetitionTime": 99.0}', encoding="utf-8")
+
+    meta = parse_nifti(nii_gz)
+    # Should have loaded 3.0 from the correct sidecar, not 99.0 from the wrong one
+    assert meta.tr == pytest.approx(3.0)

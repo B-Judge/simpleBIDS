@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import sys
 from pathlib import Path
@@ -24,6 +25,10 @@ participant into participants.tsv:
      (e.g. 'anat dwi func' — derived from BIDS datatype folder names)
   ?  Participants in the TSV but absent on disk are flagged with a warning
      and left in place — they are never deleted automatically
+
+For subjects with two or more sessions, a per-subject sessions file is also
+created or updated:
+  sub-<id>/sub-<id>_sessions.tsv   (session_id + modalities columns)
 
 Custom columns added manually (age, sex, group, …) are preserved; this
 command never overwrites values it did not write itself.
@@ -105,6 +110,7 @@ def main(argv=None) -> None:
 
     added: list[str] = []
     updated: list[str] = []
+    sessions_updated: list[str] = []
 
     print(f"\nScanning {len(sub_dirs)} subject director{'y' if len(sub_dirs) == 1 else 'ies'} …\n")
     with ProgressBar(total=len(sub_dirs), label="Scanning subjects") as scan_bar:
@@ -121,6 +127,13 @@ def main(argv=None) -> None:
                 added.append(participant_id)
 
             table.add(record)
+
+            # Create/update sessions.tsv for multi-session subjects
+            sessions = _collect_sessions(sub_dir)
+            if len(sessions) >= 2:
+                _update_sessions_tsv(sub_dir, sessions)
+                sessions_updated.append(participant_id)
+
             scan_bar.update(i)
 
     table.save(tsv_path)
@@ -138,6 +151,11 @@ def main(argv=None) -> None:
             print(f"    ~ {pid}")
 
     print(f"\n  Total: {len(table)} participant(s)")
+
+    if sessions_updated:
+        print(f"\n  sessions.tsv created/updated for {len(sessions_updated)} multi-session subject(s):")
+        for pid in sessions_updated:
+            print(f"    {pid}/{pid}_sessions.tsv")
 
     # Flag participants in TSV missing from disk
     on_disk = {d.name for d in sub_dirs}
@@ -166,6 +184,68 @@ def _collect_modalities(sub_dir: Path) -> set[str]:
             elif not child.name.startswith("."):
                 datatypes.add(child.name)
     return datatypes
+
+
+def _collect_sessions(sub_dir: Path) -> list[tuple[str, set[str]]]:
+    """Return a list of (session_id, modalities) for each ses-* dir under sub_dir."""
+    sessions: list[tuple[str, set[str]]] = []
+    for child in sorted(sub_dir.iterdir()):
+        if child.is_dir() and child.name.startswith("ses-"):
+            modalities: set[str] = set()
+            for ses_child in child.iterdir():
+                if ses_child.is_dir() and not ses_child.name.startswith("."):
+                    modalities.add(ses_child.name)
+            sessions.append((child.name, modalities))
+    return sessions
+
+
+def _update_sessions_tsv(
+    sub_dir: Path,
+    sessions: list[tuple[str, set[str]]],
+) -> None:
+    """Create or update ``sub-<id>/sub-<id>_sessions.tsv`` for a multi-session subject.
+
+    Existing rows are merged with newly discovered sessions; manually added
+    columns (e.g. ``acq_time``) are preserved.  The ``modalities`` column is
+    always refreshed from disk.
+    """
+    sub_id = sub_dir.name  # e.g. "sub-001"
+    tsv_path = sub_dir / f"{sub_id}_sessions.tsv"
+
+    # Load existing rows so we can preserve user-added columns
+    existing: dict[str, dict[str, str]] = {}
+    extra_cols: list[str] = []
+    if tsv_path.exists():
+        try:
+            with tsv_path.open(newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                fieldnames = reader.fieldnames or []
+                extra_cols = [c for c in fieldnames if c not in ("session_id", "modalities")]
+                for row in reader:
+                    ses_id = row.get("session_id", "").strip()
+                    if ses_id:
+                        existing[ses_id] = dict(row)
+        except Exception as exc:
+            logger.warning("Could not read %s — starting fresh: %s", tsv_path, exc)
+
+    # Merge discovered sessions into the existing rows
+    for ses_id, modalities in sessions:
+        row = existing.get(ses_id, {"session_id": ses_id})
+        row["session_id"] = ses_id
+        row["modalities"] = " ".join(sorted(modalities)) if modalities else "n/a"
+        existing[ses_id] = row
+
+    # Write out, keeping required columns first then any extra user columns
+    cols = ["session_id", "modalities"] + extra_cols
+    with tsv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=cols, delimiter="\t", extrasaction="ignore"
+        )
+        writer.writeheader()
+        for ses_id in sorted(existing):
+            writer.writerow({col: existing[ses_id].get(col, "n/a") for col in cols})
+
+    logger.info("Updated %s", tsv_path)
 
 
 def _all_ids(table: ParticipantsTable) -> list[str]:

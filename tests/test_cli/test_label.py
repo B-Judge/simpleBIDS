@@ -302,3 +302,66 @@ def test_label_gui_success_writes_config(tmp_path: Path) -> None:
         label_main([str(bids)])
 
     assert (bids / "code" / "dcm2bids_config.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Headless mode — localizer skipping (Issue 6)
+# ---------------------------------------------------------------------------
+
+
+def _localizer_entries(bids_root: Path) -> list[dict]:
+    """Two-entry manifest: one real series and one localizer."""
+    base = {
+        "series_number": 1,
+        "modality": "MR",
+        "file_count": 5,
+        "representative_file": str(bids_root / "sourcedata" / "x.dcm"),
+        "all_files": [],
+        "subject_id": "001",
+        "session_id": "20230101",
+        "staging_dir": None,
+        "slice_png": None,
+    }
+    return [
+        {
+            **base,
+            "index": 0,
+            "series_description": "AAHeadScout",
+            "suggested_datatype": None,
+            "suggested_suffix": None,
+            "is_localizer": True,
+            "slug": "001_AAHeadScout",
+        },
+        {
+            **base,
+            "index": 1,
+            "series_description": "T1w_MPRAGE",
+            "suggested_datatype": "anat",
+            "suggested_suffix": "T1w",
+            "is_localizer": False,
+            "slug": "002_T1w_MPRAGE",
+        },
+    ]
+
+
+def test_headless_skips_localizer_series(tmp_path: Path) -> None:
+    """Headless mode must not include localizer series in the config."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _write_manifest(bids, _localizer_entries(bids))
+    label_main([str(bids), "--headless"])
+    config = json.loads((bids / "code" / "dcm2bids_config.json").read_text())
+    descriptions = config["descriptions"]
+    series_descs = [d.get("criteria", {}).get("SeriesDescription") for d in descriptions]
+    assert "AAHeadScout" not in series_descs
+    assert "T1w_MPRAGE" in series_descs
+
+
+def test_headless_localizer_config_has_one_entry(tmp_path: Path) -> None:
+    """With one localizer and one real series, config should have exactly one entry."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _write_manifest(bids, _localizer_entries(bids))
+    label_main([str(bids), "--headless"])
+    config = json.loads((bids / "code" / "dcm2bids_config.json").read_text())
+    assert len(config["descriptions"]) == 1

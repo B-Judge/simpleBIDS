@@ -64,11 +64,16 @@ def parse_nifti(path: Path) -> NiftiMetadata:
 
 
 def _load_sidecar(nifti_path: Path) -> dict:
-    """Load the JSON sidecar for a NIfTI file if it exists."""
-    sidecar_path = nifti_path.with_suffix("").with_suffix(".json")
-    if not sidecar_path.exists():
-        # Handle .nii.gz → .json
-        sidecar_path = Path(str(nifti_path).replace(".nii.gz", ".json"))
+    """Load the JSON sidecar for a NIfTI file if it exists.
+
+    Handles both ``.nii`` (sidecar is ``<stem>.json``) and ``.nii.gz``
+    (sidecar is ``<stem-without-.nii.gz>.json``).
+    """
+    name = nifti_path.name
+    if name.endswith(".nii.gz"):
+        sidecar_path = nifti_path.parent / (name[: -len(".nii.gz")] + ".json")
+    else:
+        sidecar_path = nifti_path.with_suffix(".json")
     if sidecar_path.exists():
         try:
             return json.loads(sidecar_path.read_text(encoding="utf-8"))

@@ -120,7 +120,35 @@ def main(argv=None) -> None:
     cache_dir = bids_root / _CACHE_DIRNAME
     staging_root = bids_root / _STAGING_DIRNAME
 
-    # Idempotent: clear and rebuild staging + cache
+    # ── Preserve existing labels before clearing cache ────────────────────────
+    # If bids-label has already been run, carry its SeriesDescription→(datatype,
+    # suffix) decisions forward as heuristic suggestions in the new manifest.
+    # The dcm2bids_config.json itself remains valid and is NOT touched.
+    existing_labels: dict[str, tuple[str | None, str | None]] = {}
+    config_path = bids_root / "code" / "dcm2bids_config.json"
+    if config_path.exists():
+        try:
+            config_data = json.loads(config_path.read_text(encoding="utf-8"))
+            for entry in config_data.get("descriptions", []):
+                desc = entry.get("criteria", {}).get("SeriesDescription")
+                if desc:
+                    existing_labels[desc] = (
+                        entry.get("datatype") or None,
+                        entry.get("suffix") or None,
+                    )
+        except Exception as exc:
+            logger.debug("Could not read existing config for label preservation: %s", exc)
+
+    if existing_labels:
+        print(
+            f"\n  Note: Found existing config with {len(existing_labels)} labeled "
+            f"series — previous labels will be applied as suggestions.\n"
+            f"  The existing config is still valid; only re-run bids-label if you\n"
+            f"  need to label newly added series or change existing assignments.\n"
+        )
+
+    # Idempotent: clear and rebuild staging + cache.
+    # Also clear conversion status so it doesn't refer to a stale staging tree.
     for d in (cache_dir, staging_root):
         if d.exists():
             shutil.rmtree(d)
@@ -151,6 +179,23 @@ def main(argv=None) -> None:
             group.session_id = infer_session(meta, group.representative_file)
             infer_bar.update(i + 1)
     print(f"  Done  ({time.monotonic() - t0:.1f}s)")
+
+    # Apply previous labeling decisions as suggestions for matching series
+    if existing_labels:
+        n_matched = 0
+        for group in series_groups:
+            key = group.series_description or ""
+            if key in existing_labels:
+                dt, sf = existing_labels[key]
+                if dt is not None:
+                    group.suggested_datatype = dt
+                if sf is not None:
+                    group.suggested_suffix = sf
+                n_matched += 1
+        if n_matched:
+            logger.info(
+                "Re-applied previous labels to %d/%d series", n_matched, len(series_groups)
+            )
 
     # ── Phase 3: build symlinked staging tree ─────────────────────────────────
     _banner("Phase 3/4 — Building staging directories")

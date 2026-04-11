@@ -150,12 +150,24 @@ def _run_headless(
     config_path: Path,
     bids_root: Path,
 ) -> None:
-    """Auto-label all series from heuristics and write the config."""
+    """Auto-label all series from heuristics and write the config.
+
+    Localizer/scout series are silently skipped — they are not valid BIDS
+    series and dcm2bids would place them in its temporary directory anyway.
+    """
     print("\nHeadless labeling — applying heuristic rules …")
     labeled: list[LabeledSeries] = []
+    skipped_localizers: list[str] = []
 
     with ProgressBar(total=len(groups), label="Labeling series") as bar:
         for i, group in enumerate(groups):
+            if group.is_localizer:
+                skipped_localizers.append(group.series_description or "?")
+                logger.info(
+                    "Skipping localizer/scout series '%s'", group.series_description
+                )
+                bar.update(i + 1)
+                continue
             datatype = group.suggested_datatype or "anat"
             suffix = group.suggested_suffix or "T1w"
             labeled.append(
@@ -180,6 +192,13 @@ def _run_headless(
         print(f"  {desc:<40}  {ls.datatype:<10}  {ls.suffix}")
 
     print(f"\n  {len(labeled)} series labeled.")
+    if skipped_localizers:
+        print(
+            f"  {len(skipped_localizers)} localizer/scout series skipped "
+            f"(not valid BIDS series):"
+        )
+        for desc in skipped_localizers:
+            print(f"    ✕ {desc}")
     print(f"  Config written to {config_path}")
     print(
         "\n  Review the config before converting — heuristics may misidentify\n"

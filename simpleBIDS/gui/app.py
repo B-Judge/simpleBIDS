@@ -10,7 +10,6 @@ from tkinter import filedialog, messagebox, ttk
 
 from simpleBIDS.bids.config_builder import LabeledSeries, build_config, write_config
 from simpleBIDS.bids.converter import convert_subject
-from simpleBIDS.bids.participants import ParticipantRecord
 from simpleBIDS.bids.scaffold import scaffold_bids
 from simpleBIDS.inference import infer_session, infer_subject
 from simpleBIDS.patterns import build_staging, cleanup_staging, group_series
@@ -18,7 +17,11 @@ from simpleBIDS.utils.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
-_CACHE_FILENAME = ".simplebids_session.json"
+# Session cache lives in the standard CLI cache directory so that the App and
+# the CLI tools share the same file layout and can interoperate.
+_CACHE_DIRNAME = ".simpleBIDS_cache"
+_MANIFEST_NAME = "series_manifest.json"
+_SESSION_NAME = "app_session.json"
 
 
 class App(tk.Tk):
@@ -30,6 +33,11 @@ class App(tk.Tk):
         3. Subject/session review (``StudyConfigPanel``)
         4. Series labeling loop (``SeriesPanel`` + ``LabelForm``)
         5. Conversion with live progress (``ProgressPanel``)
+
+    Session state is persisted to
+    ``<output>/.simpleBIDS_cache/app_session.json`` after every labeling
+    decision.  On resume the manifest is read from the same cache directory
+    used by the CLI tools, avoiding a full re-scan.
     """
 
     def __init__(self) -> None:
@@ -42,6 +50,7 @@ class App(tk.Tk):
         self._output_dir: Path | None = None
         self._series_groups = []
         self._labeled_series: list[LabeledSeries] = []
+        self._label_index: int = 0
 
         self._build_ui()
 
@@ -118,15 +127,15 @@ class App(tk.Tk):
             messagebox.showerror("Not a directory", f"{self._input_dir} does not exist.")
             return
 
-        # Check for cached session
-        cache_path = self._output_dir / _CACHE_FILENAME
-        if cache_path.exists():
+        # Check for an existing session in the cache directory
+        session_path = self._output_dir / _CACHE_DIRNAME / _SESSION_NAME
+        if session_path.exists():
             resume = messagebox.askyesno(
                 "Resume session",
                 "A previous session was found. Resume from where you left off?",
             )
             if resume:
-                self._load_cache(cache_path)
+                self._load_cache(session_path)
                 return
 
         self._clear_content()
@@ -147,18 +156,19 @@ class App(tk.Tk):
 
             panel.log("Inferring subject/session identifiers…")
             for group in self._series_groups:
-                meta = None
-                try:
-                    from simpleBIDS.parsers.dicom_parser import parse_dicom_file
-                    meta = parse_dicom_file(group.representative_file)
-                except Exception:
-                    pass
+                # Use already-parsed DICOM metadata stored in extra rather than
+                # re-reading the file; falls back gracefully for NIfTI groups.
+                meta = group.extra.get("dicom_metadata")
                 group.subject_id = infer_subject(meta, group.representative_file)
                 group.session_id = infer_session(meta, group.representative_file)
 
             panel.log("Building staging directories…")
             build_staging(self._series_groups, self._output_dir)
             panel.log("Staging complete.")
+
+            # Persist the manifest to the CLI-compatible cache directory so
+            # the App and CLI tools share the same serialised scan results.
+            self._save_manifest()
 
             self.after(0, self._show_study_config)
         except Exception as exc:
@@ -255,7 +265,9 @@ class App(tk.Tk):
 
     def _do_convert(self, config_path: Path, panel) -> None:
         participants_path = self._output_dir / "participants.tsv"
-        subjects = {}
+        # Collect the first staging_dir per (subject, session); with the
+        # hierarchical layout staging_dir.parent is the per-session directory.
+        subjects: dict[tuple[str | None, str | None], Path | None] = {}
         for group in self._series_groups:
             key = (group.subject_id, group.session_id)
             subjects.setdefault(key, group.staging_dir)
@@ -282,31 +294,123 @@ class App(tk.Tk):
             self.after(0, lambda: panel.log("Some conversions failed — check logs."))
 
     # ------------------------------------------------------------------
-    # Cache
+    # Cache / session persistence
     # ------------------------------------------------------------------
 
-    def _save_cache(self) -> None:
+    def _cache_dir(self) -> Path | None:
         if self._output_dir is None:
+            return None
+        d = self._output_dir / _CACHE_DIRNAME
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _save_manifest(self) -> None:
+        """Persist the scanned series groups in the CLI-compatible manifest format."""
+        cache_dir = self._cache_dir()
+        if cache_dir is None:
             return
+        manifest = []
+        for i, group in enumerate(self._series_groups):
+            manifest.append({
+                "index": i,
+                "series_description": group.series_description,
+                "series_number": group.series_number,
+                "modality": group.modality,
+                "file_count": group.file_count,
+                "representative_file": str(group.representative_file),
+                "all_files": [str(f) for f in group.all_files],
+                "subject_id": group.subject_id,
+                "session_id": group.session_id,
+                "suggested_datatype": group.suggested_datatype,
+                "suggested_suffix": group.suggested_suffix,
+                "is_localizer": group.is_localizer,
+                "staging_dir": str(group.staging_dir) if group.staging_dir else None,
+                "slug": group.slug,
+                "slice_png": None,
+            })
+        try:
+            (cache_dir / _MANIFEST_NAME).write_text(
+                json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.warning("Could not save manifest: %s", exc)
+
+    def _save_cache(self) -> None:
+        """Persist labeling decisions so the session can be resumed."""
+        cache_dir = self._cache_dir()
+        if cache_dir is None:
+            return
+
+        # Serialize each labeled decision by its position in _series_groups
+        decisions = []
+        for ls in self._labeled_series:
+            try:
+                series_index = self._series_groups.index(ls.series_group)
+            except ValueError:
+                series_index = -1
+            decisions.append({
+                "series_index": series_index,
+                "datatype": ls.datatype,
+                "suffix": ls.suffix,
+                "entities": ls.entities,
+                "custom_criteria": ls.custom_criteria,
+                "exclude": ls.exclude,
+            })
+
         cache = {
             "input_dir": str(self._input_dir),
             "output_dir": str(self._output_dir),
             "label_index": self._label_index,
+            "labeled_decisions": decisions,
         }
-        cache_path = self._output_dir / _CACHE_FILENAME
         try:
-            cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            (cache_dir / _SESSION_NAME).write_text(
+                json.dumps(cache, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.warning("Could not save session cache: %s", exc)
 
-    def _load_cache(self, cache_path: Path) -> None:
+    def _load_cache(self, session_path: Path) -> None:
+        """Restore a previous session without re-scanning.
+
+        Loads the scan results from the CLI-compatible manifest and
+        reconstructs the labeled decisions from the saved decision list.
+        Falls back to a full re-scan if the manifest is missing.
+        """
         try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            cache = json.loads(session_path.read_text(encoding="utf-8"))
             self._input_dir = Path(cache["input_dir"])
             self._output_dir = Path(cache["output_dir"])
-            self._label_index = cache.get("label_index", 0)
-            # Re-run scan to restore series groups, then jump to labeling step
-            self._start_scan()
+
+            manifest_path = self._output_dir / _CACHE_DIRNAME / _MANIFEST_NAME
+            if manifest_path.exists():
+                from simpleBIDS.cli.label import _group_from_entry
+                manifest: list[dict] = json.loads(manifest_path.read_text(encoding="utf-8"))
+                self._series_groups = [_group_from_entry(e) for e in manifest]
+
+                # Restore labeled decisions from saved indices
+                self._labeled_series = []
+                for decision in cache.get("labeled_decisions", []):
+                    idx = decision.get("series_index", -1)
+                    if 0 <= idx < len(self._series_groups):
+                        self._labeled_series.append(LabeledSeries(
+                            series_group=self._series_groups[idx],
+                            datatype=decision.get("datatype", "anat"),
+                            suffix=decision.get("suffix", "T1w"),
+                            entities=decision.get("entities", {}),
+                            custom_criteria=decision.get("custom_criteria", {}),
+                            exclude=decision.get("exclude", False),
+                        ))
+
+                self._label_index = cache.get("label_index", 0)
+                self.after(0, self._show_study_config)
+            else:
+                # Manifest missing — fall back to full re-scan
+                logger.warning("Session manifest not found; re-scanning from scratch")
+                self._input_var.set(str(self._input_dir))
+                self._output_var.set(str(self._output_dir))
+                self._start_scan()
+
         except Exception as exc:
             messagebox.showerror("Cache error", f"Could not resume session: {exc}")
 

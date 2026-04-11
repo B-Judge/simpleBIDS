@@ -243,3 +243,53 @@ def test_sort_saves_slice_png_when_sample_slice_succeeds(tmp_path: Path) -> None
     cache_dir = bids / ".simpleBIDS_cache"
     pngs = list(cache_dir.glob("*.png"))
     assert len(pngs) > 0
+
+
+# ---------------------------------------------------------------------------
+# Label preservation on re-sort (Issue 4)
+# ---------------------------------------------------------------------------
+
+
+def test_sort_preserves_labels_from_existing_config(tmp_path: Path) -> None:
+    """Re-running bids-sort re-applies previous labeling decisions as suggestions."""
+    bids = tmp_path / "study"
+    init_main([str(bids), "--name", "Test"])
+    _populate_sourcedata(bids / "sourcedata", n_series=1)
+
+    # First sort
+    sort_main([str(bids)])
+    manifest_before = json.loads(
+        (bids / ".simpleBIDS_cache" / "series_manifest.json").read_text()
+    )
+    assert len(manifest_before) >= 1
+
+    # Simulate bids-label having written a config that maps T1w_MPRAGE → anat/T1w
+    code_dir = bids / "code"
+    code_dir.mkdir(exist_ok=True)
+    config = {
+        "descriptions": [
+            {
+                "datatype": "anat",
+                "suffix": "T1w",
+                "criteria": {"SeriesDescription": "T1w_MPRAGE"},
+            }
+        ]
+    }
+    (code_dir / "dcm2bids_config.json").write_text(
+        json.dumps(config), encoding="utf-8"
+    )
+
+    # Second sort — should detect the config and re-apply the labels
+    sort_main([str(bids)])
+    manifest_after = json.loads(
+        (bids / ".simpleBIDS_cache" / "series_manifest.json").read_text()
+    )
+
+    # The T1w_MPRAGE series should have its suggested labels re-applied
+    t1_entry = next(
+        (e for e in manifest_after if e.get("series_description") == "T1w_MPRAGE"),
+        None,
+    )
+    assert t1_entry is not None, "T1w_MPRAGE series not found in re-sorted manifest"
+    assert t1_entry["suggested_datatype"] == "anat"
+    assert t1_entry["suggested_suffix"] == "T1w"

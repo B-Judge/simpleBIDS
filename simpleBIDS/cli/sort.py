@@ -136,6 +136,11 @@ def main(argv=None) -> None:
                         entry.get("datatype") or None,
                         entry.get("suffix") or None,
                     )
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Existing config at %s is malformed — previous labels not preserved: %s",
+                config_path, exc,
+            )
         except Exception as exc:
             logger.debug("Could not read existing config for label preservation: %s", exc)
 

@@ -179,13 +179,13 @@ class App(tk.Tk):
     # Step 3 — Study config review
     # ------------------------------------------------------------------
 
-    def _show_study_config(self) -> None:
+    def _show_study_config(self, *, on_confirm=None) -> None:
         self._clear_content()
         from simpleBIDS.gui.study_config import StudyConfigPanel
         panel = StudyConfigPanel(
             self._content,
             series_groups=self._series_groups,
-            on_confirm=self._start_labeling,
+            on_confirm=on_confirm if on_confirm is not None else self._start_labeling,
         )
         panel.pack(fill=tk.BOTH, expand=True)
 
@@ -196,6 +196,14 @@ class App(tk.Tk):
     def _start_labeling(self) -> None:
         self._labeled_series = []
         self._label_index = 0
+        self._show_next_series()
+
+    def _resume_labeling(self) -> None:
+        """Continue from the saved label index without resetting state.
+
+        Used as the ``on_confirm`` callback when resuming a cached session so
+        that previously saved labeling decisions are not discarded.
+        """
         self._show_next_series()
 
     def _show_next_series(self) -> None:
@@ -231,12 +239,17 @@ class App(tk.Tk):
 
     def _on_label_skip(self) -> None:
         self._label_index += 1
+        self._save_cache()  # persist the updated index so resume is accurate
         self._show_next_series()
 
     def _on_label_back(self) -> None:
         if self._label_index > 0:
             self._label_index -= 1
-            if self._labeled_series:
+            # Only pop the last label if it actually belongs to the series we
+            # are going back to. Skipped series don't add to _labeled_series,
+            # so a naive pop() would remove the wrong entry.
+            prev_group = self._series_groups[self._label_index]
+            if self._labeled_series and self._labeled_series[-1].series_group is prev_group:
                 self._labeled_series.pop()
         self._show_next_series()
 
@@ -403,7 +416,9 @@ class App(tk.Tk):
                         ))
 
                 self._label_index = cache.get("label_index", 0)
-                self.after(0, self._show_study_config)
+                # Use _resume_labeling (not _start_labeling) so the restored
+                # decisions and index are not reset when the user clicks Confirm.
+                self.after(0, lambda: self._show_study_config(on_confirm=self._resume_labeling))
             else:
                 # Manifest missing — fall back to full re-scan
                 logger.warning("Session manifest not found; re-scanning from scratch")
@@ -505,7 +520,11 @@ def run_label_gui(
     def _on_back() -> None:
         if state["index"] > 0:
             state["index"] -= 1
-            if state["labeled"]:
+            # Only pop the last labeled entry if it belongs to the series we
+            # are navigating back to. Skipped series don't add to "labeled",
+            # so a blind pop() would remove the wrong decision.
+            prev_group = groups[state["index"]]
+            if state["labeled"] and state["labeled"][-1].series_group is prev_group:
                 state["labeled"].pop()
         _show_next()
 

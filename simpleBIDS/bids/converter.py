@@ -121,6 +121,7 @@ def _run_dcm2niix_fallback(
     tmp_out.mkdir(parents=True, exist_ok=True)
 
     any_success = False
+    any_failure = False
     for series_dir in sorted(staging_dir.iterdir()):
         if not series_dir.is_dir():
             continue
@@ -141,6 +142,7 @@ def _run_dcm2niix_fallback(
                 series_tmp, subject_id, session_id, bids_root, descriptions, log
             )
         else:
+            any_failure = True
             logger.warning("dcm2niix failed on %s: %s", series_dir, result.stderr)
 
     try:
@@ -148,7 +150,10 @@ def _run_dcm2niix_fallback(
     except Exception as exc:
         logger.warning("Could not remove temporary directory %s: %s", tmp_out, exc)
 
-    return any_success
+    # Only report success when all series converted. Partial success still
+    # returns False so that the subject is not marked done in the status file
+    # and the user is informed that some data is missing.
+    return any_success and not any_failure
 
 
 def _load_config(config_path: Path) -> dict:
@@ -177,7 +182,7 @@ def _place_nifti_files(
     """
     nii_files = sorted(
         p for p in src_dir.iterdir()
-        if p.suffix in {".nii", ".gz"} and ".nii" in p.name
+        if p.name.endswith(".nii.gz") or p.name.endswith(".nii")
     )
     if not nii_files:
         return

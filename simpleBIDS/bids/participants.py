@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -96,11 +98,30 @@ class ParticipantsTable:
         return ordered
 
     def save(self, path: Path) -> None:
-        """Write the table to *path* as a tab-separated file."""
+        """Write the table to *path* as a tab-separated file.
+
+        Uses an atomic write (write to a sibling temp file, then rename) so
+        that a crash mid-write never leaves *path* truncated or partially
+        written.  The rename is atomic on POSIX systems.
+        """
         cols = self.columns
-        with path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=cols, delimiter="\t")
-            writer.writeheader()
-            for record in sorted(self._records.values(), key=lambda r: r.participant_id):
-                writer.writerow(record.to_row(cols))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=path.parent, prefix=".participants_tmp_", suffix=".tsv"
+        )
+        try:
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=cols, delimiter="\t")
+                writer.writeheader()
+                for record in sorted(
+                    self._records.values(), key=lambda r: r.participant_id
+                ):
+                    writer.writerow(record.to_row(cols))
+            Path(tmp).replace(path)  # atomic on POSIX
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         logger.info("Saved %d participants to %s", len(self._records), path)

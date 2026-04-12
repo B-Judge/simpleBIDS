@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from simpleBIDS.patterns.series_grouper import SeriesGroup
 
@@ -18,6 +20,7 @@ def build_staging(
     output_root: Path,
     *,
     staging_root: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[int, Path]:
     """Create symlinked staging subdirectories for each series.
 
@@ -45,8 +48,9 @@ def build_staging(
     logger.info("Building staging directory at %s", staging_root)
 
     result: dict[int, Path] = {}
+    total = len(series_groups)
 
-    for group in series_groups:
+    for i, group in enumerate(series_groups):
         series_dir = _series_dir(staging_root, group)
         series_dir.mkdir(parents=True, exist_ok=True)
 
@@ -62,6 +66,9 @@ def build_staging(
         group.staging_dir = series_dir
         result[id(group)] = series_dir
         logger.debug("Staged %d files → %s", group.file_count, series_dir)
+
+        if progress_callback is not None:
+            progress_callback(i + 1, total)
 
     return result
 
@@ -82,22 +89,33 @@ def cleanup_staging(output_root: Path, *, staging_root: Path | None = None) -> N
 
 
 def _series_dir(staging_root: Path, group: SeriesGroup) -> Path:
-    """Return the per-series subdirectory path (not yet created)."""
-    parts: list[str] = []
-    if group.subject_id:
-        parts.append(group.subject_id)
-    if group.session_id:
-        parts.append(group.session_id)
-    parts.append(group.slug)
-    return staging_root / "_".join(parts)
+    """Return the per-series subdirectory path (not yet created).
+
+    Layout: ``<staging_root>/sub-<id>/ses-<id>/<slug>/``
+
+    Using a two-level hierarchy (subject → session → series) means that
+    ``series_dir.parent`` is the per-subject/session staging directory, which
+    is what ``dcm2niix`` and ``dcm2bids`` receive as ``--dicom_dir``.  This
+    prevents cross-subject contamination when converting multi-subject studies.
+    """
+    sub = f"sub-{group.subject_id}" if group.subject_id else "sub-unknown"
+    ses = f"ses-{group.session_id}" if group.session_id else "ses-unknown"
+    return staging_root / sub / ses / group.slug
 
 
 def _relative_target(link: Path, target: Path) -> Path:
-    """Compute a relative path from *link*'s parent to *target*."""
+    """Compute a relative path from *link*'s parent to *target*.
+
+    Uses :func:`os.path.relpath` so the result is always relative (the staging
+    tree is relocatable as long as source data moves with it).  Falls back to
+    an absolute symlink only when ``os.path.relpath`` itself raises (Windows
+    cross-drive paths; not applicable on Linux/macOS).
+    """
     try:
-        return Path(
-            "../" * len(link.parent.relative_to(link.parent).parts)
-        ) / target.resolve().relative_to(link.parent.resolve())
+        return Path(os.path.relpath(target.resolve(), link.parent.resolve()))
     except ValueError:
-        # Targets outside the tree — fall back to absolute symlink
+        logger.warning(
+            "Cannot compute relative path from %s to %s; using absolute symlink",
+            link.parent, target,
+        )
         return target.resolve()

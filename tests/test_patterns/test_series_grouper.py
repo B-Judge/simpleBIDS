@@ -288,3 +288,219 @@ def test_stem_without_gz_plain_nii():
 
 def test_stem_without_gz_other():
     assert _stem_without_gz(Path("file.txt")) == "file"
+
+
+# ---------------------------------------------------------------------------
+# suggest_bids_labels — uncovered branch: _refine_fmap_suffix
+# ---------------------------------------------------------------------------
+
+
+def test_refine_fmap_suffix_phase_image_type() -> None:
+    """fmap description with ImageType ending in 'P' → 'phase' suffix."""
+    from simpleBIDS.patterns.series_grouper import _refine_fmap_suffix
+
+    result = _refine_fmap_suffix(["ORIGINAL", "PRIMARY", "P"])
+    assert result == "phase"
+
+
+def test_refine_fmap_suffix_magnitude_image_type() -> None:
+    """fmap description with ImageType ending in 'M' → 'magnitude' suffix."""
+    from simpleBIDS.patterns.series_grouper import _refine_fmap_suffix
+
+    result = _refine_fmap_suffix(["ORIGINAL", "PRIMARY", "M"])
+    assert result == "magnitude"
+
+
+def test_refine_fmap_suffix_fallback() -> None:
+    """Unknown last ImageType value → 'fieldmap'."""
+    from simpleBIDS.patterns.series_grouper import _refine_fmap_suffix
+
+    result = _refine_fmap_suffix(["ORIGINAL", "PRIMARY", "OTHER"])
+    assert result == "fieldmap"
+
+
+def test_refine_fmap_suffix_empty() -> None:
+    """Empty ImageType list → 'fieldmap'."""
+    from simpleBIDS.patterns.series_grouper import _refine_fmap_suffix
+
+    result = _refine_fmap_suffix([])
+    assert result == "fieldmap"
+
+
+# ---------------------------------------------------------------------------
+# group_nifti_files
+# ---------------------------------------------------------------------------
+
+
+def _make_nifti(path: Path, shape=(32, 32, 20)) -> Path:
+    import numpy as np
+    import nibabel as nib
+
+    data = np.zeros(shape, dtype=np.int16)
+    img = nib.Nifti1Image(data, np.eye(4))
+    nib.save(img, str(path))
+    return path
+
+
+class TestGroupNiftiFIles:
+    def test_basic_nifti_group(self, tmp_path):
+        _make_nifti(tmp_path / "T1w.nii")
+        groups = group_nifti_files(tmp_path)
+        assert len(groups) == 1
+        assert isinstance(groups[0], SeriesGroup)
+
+    def test_nifti_group_uses_filename_as_desc(self, tmp_path):
+        _make_nifti(tmp_path / "T1w_MPRAGE.nii")
+        groups = group_nifti_files(tmp_path)
+        assert groups[0].series_description == "T1w_MPRAGE"
+
+    def test_nifti_group_with_sidecar_desc(self, tmp_path):
+        import json
+
+        _make_nifti(tmp_path / "scan.nii")
+        (tmp_path / "scan.json").write_text(
+            json.dumps({"SeriesDescription": "T2w_TSE"}), encoding="utf-8"
+        )
+        groups = group_nifti_files(tmp_path)
+        assert groups[0].series_description == "T2w_TSE"
+
+    def test_nifti_group_suggests_bids_labels(self, tmp_path):
+        _make_nifti(tmp_path / "T1w_MPRAGE.nii")
+        groups = group_nifti_files(tmp_path)
+        assert groups[0].suggested_datatype == "anat"
+        assert groups[0].suggested_suffix == "T1w"
+
+    def test_nifti_group_4d_functional(self, tmp_path):
+        import numpy as np
+        import nibabel as nib
+
+        data = np.zeros((32, 32, 20, 50), dtype=np.int16)
+        img = nib.Nifti1Image(data, np.eye(4))
+        nib.save(img, str(tmp_path / "BOLD_rest.nii"))
+        groups = group_nifti_files(tmp_path)
+        assert groups[0].suggested_datatype == "func"
+
+    def test_nifti_group_empty_directory(self, tmp_path):
+        groups = group_nifti_files(tmp_path)
+        assert groups == []
+
+
+# ---------------------------------------------------------------------------
+# group_series — auto-detect and mode branches
+# ---------------------------------------------------------------------------
+
+
+class TestGroupSeries:
+    def test_mode_nifti_explicit(self, tmp_path):
+        from simpleBIDS.patterns.series_grouper import group_series
+
+        _make_nifti(tmp_path / "T1w.nii")
+        groups = group_series(tmp_path, mode="nifti")
+        assert len(groups) == 1
+
+    def test_mode_dicom_explicit(self, tmp_path):
+        from simpleBIDS.patterns.series_grouper import group_series
+
+        uid = pydicom.uid.generate_uid()
+        study_uid = pydicom.uid.generate_uid()
+        _make_dicom(
+            tmp_path / "im001.dcm",
+            series_uid=uid,
+            study_uid=study_uid,
+            series_number=1,
+            instance_number=1,
+            series_description="T1w",
+        )
+        groups = group_series(tmp_path, mode="dicom")
+        assert len(groups) == 1
+
+    def test_mode_auto_finds_dicom(self, tmp_path):
+        from simpleBIDS.patterns.series_grouper import group_series
+
+        uid = pydicom.uid.generate_uid()
+        study_uid = pydicom.uid.generate_uid()
+        _make_dicom(
+            tmp_path / "im001.dcm",
+            series_uid=uid,
+            study_uid=study_uid,
+            series_number=1,
+            instance_number=1,
+            series_description="T1w",
+        )
+        groups = group_series(tmp_path, mode="auto")
+        assert len(groups) >= 1
+
+    def test_mode_auto_falls_back_to_nifti(self, tmp_path):
+        """If no DICOM found but NIfTI present, auto mode returns NIfTI groups."""
+        from simpleBIDS.patterns.series_grouper import group_series
+
+        # NIfTI only — no DICOM
+        _make_nifti(tmp_path / "T1w.nii")
+        groups = group_series(tmp_path, mode="auto")
+        assert len(groups) == 1
+
+    def test_mode_auto_empty_returns_empty(self, tmp_path):
+        from simpleBIDS.patterns.series_grouper import group_series
+
+        groups = group_series(tmp_path, mode="auto")
+        assert groups == []
+
+
+# ---------------------------------------------------------------------------
+# group_nifti_files — unreadable NIfTI is skipped (lines 283-285)
+# ---------------------------------------------------------------------------
+
+
+def test_group_nifti_skips_unreadable_file(tmp_path) -> None:
+    """A corrupt NIfTI triggers the except branch and is skipped."""
+    bad = tmp_path / "corrupt.nii"
+    bad.write_bytes(b"not a nifti")
+    good = tmp_path / "T1w.nii"
+    _make_nifti(good)
+
+    groups = group_nifti_files(tmp_path)
+    # Only the good file should produce a group
+    assert len(groups) == 1
+    assert groups[0].series_description == "T1w"
+
+
+# ---------------------------------------------------------------------------
+# _probe_dicom — break (n limit) and continue (non-DICOM file) branches
+# ---------------------------------------------------------------------------
+
+
+def test_probe_dicom_returns_true_for_valid_dicom(tmp_path) -> None:
+    """_probe_dicom returns True when at least one valid DICOM exists."""
+    from simpleBIDS.patterns.series_grouper import _probe_dicom
+
+    uid = pydicom.uid.generate_uid()
+    study_uid = pydicom.uid.generate_uid()
+    _make_dicom(
+        tmp_path / "im001.dcm",
+        series_uid=uid,
+        study_uid=study_uid,
+        series_number=1,
+        instance_number=1,
+        series_description="T1w",
+    )
+    assert _probe_dicom(tmp_path) is True
+
+
+def test_probe_dicom_returns_false_for_non_dicom(tmp_path) -> None:
+    """_probe_dicom returns False when no valid DICOM files exist (continue branch)."""
+    from simpleBIDS.patterns.series_grouper import _probe_dicom
+
+    (tmp_path / "file.dcm").write_bytes(b"not a dicom file")
+    assert _probe_dicom(tmp_path) is False
+
+
+def test_probe_dicom_respects_n_limit(tmp_path) -> None:
+    """_probe_dicom stops probing after n files (break branch)."""
+    from simpleBIDS.patterns.series_grouper import _probe_dicom
+
+    # Write 10 non-DICOM files
+    for i in range(10):
+        (tmp_path / f"file{i}.dcm").write_bytes(b"not a dicom")
+    # Should return False without crashing, having checked only n=5 files
+    result = _probe_dicom(tmp_path, n=5)
+    assert result is False

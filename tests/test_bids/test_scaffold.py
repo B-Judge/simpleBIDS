@@ -37,3 +37,12 @@ def test_scaffold_overwrites_when_forced(tmp_path):
     (tmp_path / "README").write_text("old")
     scaffold_bids(tmp_path, dataset_name="New", overwrite=True)
     assert "old" not in (tmp_path / "README").read_text()
+
+
+def test_scaffold_does_not_overwrite_existing_json(tmp_path):
+    """_write_json skips existing JSON files when overwrite=False (lines 96-97)."""
+    existing = json.dumps({"Name": "Original", "BIDSVersion": "1.0.0"})
+    (tmp_path / "dataset_description.json").write_text(existing)
+    scaffold_bids(tmp_path, dataset_name="ShouldNotOverwrite")
+    loaded = json.loads((tmp_path / "dataset_description.json").read_text())
+    assert loaded["Name"] == "Original"

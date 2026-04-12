@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -100,21 +102,34 @@ def _run_dcm2niix_fallback(
     config_path: Path,
     log: Callable[[str], None],
 ) -> bool:
-    """Minimal fallback: run dcm2niix on each series staging subdirectory."""
+    """Fallback: run dcm2niix per series staging subdirectory, then place files into BIDS tree.
+
+    For each series directory under *staging_dir*, dcm2niix is run into a
+    temporary output directory.  The resulting NIfTI files are then matched
+    against the ``descriptions`` in *config_path* by ``SeriesDescription``
+    substring and moved into the correct BIDS subject/session/datatype path.
+    The temporary directory is removed on completion.
+    """
     if not shutil.which("dcm2niix"):
         logger.error("Neither dcm2bids nor dcm2niix found in PATH.")
         return False
+
+    config = _load_config(config_path)
+    descriptions = config.get("descriptions", [])
 
     tmp_out = bids_root / ".dcm2niix_tmp" / f"sub-{subject_id}_ses-{session_id}"
     tmp_out.mkdir(parents=True, exist_ok=True)
 
     any_success = False
+    any_failure = False
     for series_dir in sorted(staging_dir.iterdir()):
         if not series_dir.is_dir():
             continue
+        series_tmp = tmp_out / series_dir.name
+        series_tmp.mkdir(parents=True, exist_ok=True)
         cmd = [
             "dcm2niix",
-            "-o", str(tmp_out),
+            "-o", str(series_tmp),
             "-f", "%d_%s",
             "-z", "y",
             str(series_dir),
@@ -123,13 +138,125 @@ def _run_dcm2niix_fallback(
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             any_success = True
+            _place_nifti_files(
+                series_tmp, subject_id, session_id, bids_root, descriptions, log
+            )
         else:
+            any_failure = True
             logger.warning("dcm2niix failed on %s: %s", series_dir, result.stderr)
 
-    # TODO: implement config-based renaming and placement of dcm2niix output
-    # into the BIDS tree. For now, files land in tmp_out for manual review.
-    log(f"dcm2niix output at {tmp_out} — manual BIDS placement not yet implemented")
-    return any_success
+    try:
+        shutil.rmtree(tmp_out)
+    except Exception as exc:
+        logger.warning("Could not remove temporary directory %s: %s", tmp_out, exc)
+
+    # Only report success when all series converted. Partial success still
+    # returns False so that the subject is not marked done in the status file
+    # and the user is informed that some data is missing.
+    return any_success and not any_failure
+
+
+def _load_config(config_path: Path) -> dict:
+    """Load dcm2bids config JSON; return an empty dict on any error."""
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not load config at %s: %s", config_path, exc)
+        return {}
+
+
+def _place_nifti_files(
+    src_dir: Path,
+    subject_id: str,
+    session_id: str,
+    bids_root: Path,
+    descriptions: list[dict],
+    log: Callable[[str], None],
+) -> None:
+    """Move dcm2niix NIfTI output into the BIDS tree using config descriptions.
+
+    Each ``*.nii.gz`` (or ``*.nii``) file in *src_dir* is matched to a config
+    description by ``SeriesDescription`` substring.  Both the NIfTI and its
+    JSON sidecar (if present) are moved to the appropriate BIDS destination:
+    ``<bids_root>/sub-<sub>/ses-<ses>/<datatype>/<bids_filename>.<ext>``.
+    """
+    nii_files = sorted(
+        p for p in src_dir.iterdir()
+        if p.name.endswith(".nii.gz") or p.name.endswith(".nii")
+    )
+    if not nii_files:
+        return
+
+    for nii_path in nii_files:
+        stem = nii_path.name.replace(".nii.gz", "").replace(".nii", "")
+        match = _match_description(stem, descriptions)
+
+        if match is None:
+            logger.warning(
+                "No matching config description for '%s'; skipping BIDS placement.",
+                nii_path.name,
+            )
+            continue
+
+        datatype = match.get("datatype", "anat")
+        suffix = match.get("suffix", "T1w")
+        entities: dict[str, str] = match.get("custom_entities", {})
+        bids_name = _build_bids_filename(subject_id, session_id, entities, suffix)
+
+        dest_dir = bids_root / f"sub-{subject_id}" / f"ses-{session_id}" / datatype
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        for src_ext in (".nii.gz", ".nii", ".json"):
+            src = src_dir / (stem + src_ext)
+            if src.exists():
+                dest = dest_dir / (bids_name + src_ext)
+                shutil.move(str(src), str(dest))
+                log(f"  → {dest.relative_to(bids_root)}")
+
+
+def _match_description(stem: str, descriptions: list[dict]) -> dict | None:
+    """Return the first config description whose ``SeriesDescription`` matches *stem*.
+
+    Matching uses ``re.search`` so that dcm2bids-style regex criteria work in
+    the fallback path (e.g. ``"T1w.*MPRAGE"``).  If the criterion is not a
+    valid regex, falls back to case-insensitive substring containment.
+
+    If only one description is present it is returned unconditionally as a
+    last-resort fallback.
+    """
+    for desc in descriptions:
+        series_desc = desc.get("criteria", {}).get("SeriesDescription", "")
+        if not series_desc:
+            continue
+        try:
+            if re.search(series_desc, stem, re.IGNORECASE):
+                return desc
+        except re.error:
+            # criterion is not a valid regex — fall back to substring match
+            if series_desc.lower() in stem.lower():
+                return desc
+    if len(descriptions) == 1:
+        return descriptions[0]
+    return None
+
+
+def _build_bids_filename(
+    subject_id: str,
+    session_id: str,
+    entities: dict[str, str],
+    suffix: str,
+) -> str:
+    """Assemble a BIDS-compliant filename stem (without extension).
+
+    Entity order follows the BIDS recommended ordering: task, acq, ce, dir,
+    rec, run, echo, part.
+    """
+    parts = [f"sub-{subject_id}", f"ses-{session_id}"]
+    for key in ("task", "acq", "ce", "dir", "rec", "run", "echo", "part"):
+        if key in entities:
+            parts.append(f"{key}-{entities[key]}")
+    parts.append(suffix)
+    return "_".join(parts)
 
 
 def _update_participants(

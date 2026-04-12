@@ -160,6 +160,8 @@ class ProgressBar:
         if self._start_time is None or self._done == 0:
             return "ETA --:--"
         elapsed = time.monotonic() - self._start_time
+        if elapsed <= 0:
+            return "ETA --:--"
         rate = self._done / elapsed  # items per second
         remaining = self.total - self._done
         if rate <= 0 or remaining <= 0:

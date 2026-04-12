@@ -64,11 +64,16 @@ def parse_nifti(path: Path) -> NiftiMetadata:
 
 
 def _load_sidecar(nifti_path: Path) -> dict:
-    """Load the JSON sidecar for a NIfTI file if it exists."""
-    sidecar_path = nifti_path.with_suffix("").with_suffix(".json")
-    if not sidecar_path.exists():
-        # Handle .nii.gz → .json
-        sidecar_path = Path(str(nifti_path).replace(".nii.gz", ".json"))
+    """Load the JSON sidecar for a NIfTI file if it exists.
+
+    Handles both ``.nii`` (sidecar is ``<stem>.json``) and ``.nii.gz``
+    (sidecar is ``<stem-without-.nii.gz>.json``).
+    """
+    name = nifti_path.name
+    if name.endswith(".nii.gz"):
+        sidecar_path = nifti_path.parent / (name[: -len(".nii.gz")] + ".json")
+    else:
+        sidecar_path = nifti_path.with_suffix(".json")
     if sidecar_path.exists():
         try:
             return json.loads(sidecar_path.read_text(encoding="utf-8"))
@@ -79,6 +84,11 @@ def _load_sidecar(nifti_path: Path) -> dict:
 
 def walk_nifti_directory(root: Path) -> list[Path]:
     """Recursively find all NIfTI files (``.nii``, ``.nii.gz``) under *root*."""
-    from simpleBIDS.utils.filesystem import iter_files
-
-    return list(iter_files(root, suffixes={".nii", ".gz"}))
+    result: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if name.endswith(".nii.gz") or name.endswith(".nii"):
+            result.append(path)
+    return result

@@ -183,6 +183,34 @@ def test_sample_nifti_4d_returns_2d(tmp_path: Path) -> None:
     assert result.ndim == 2
 
 
+def test_sample_nifti_4d_uses_last_volume(tmp_path: Path) -> None:
+    """For 4D volumes the LAST volume must be sampled, not the middle one."""
+    import nibabel as nib
+    from simpleBIDS.patterns.slice_sampler import _sample_nifti
+
+    n_vols = 5
+    shape_3d = (16, 16, 8)
+    data = np.zeros((*shape_3d, n_vols), dtype=np.float32)
+
+    # All volumes except the last are flat (uniform → normalizes to all-zeros)
+    for v in range(n_vols - 1):
+        data[..., v] = 100.0
+
+    # Last volume: gradient values → normalizes to a non-trivial result
+    data[..., -1] = np.arange(
+        np.prod(shape_3d), dtype=np.float32
+    ).reshape(shape_3d)
+
+    nii_path = tmp_path / "4d_last_vol.nii"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), str(nii_path))
+
+    result = _sample_nifti(nii_path)
+    assert result.ndim == 2
+    # If the last volume was used (gradient), at least some pixels are > 0.
+    # If the middle volume (index 2) were used instead, all pixels would be 0.
+    assert result.max() > 0, "Expected non-zero pixels from last-volume gradient"
+
+
 def test_sample_nifti_shape_has_correct_rows(tmp_path: Path) -> None:
     from simpleBIDS.patterns.slice_sampler import _sample_nifti
 

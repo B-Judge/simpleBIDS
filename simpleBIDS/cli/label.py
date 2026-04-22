@@ -238,6 +238,15 @@ def _group_from_entry(entry: dict) -> SeriesGroup:
     )
 
 
+def get_default_excluded_indices(series_groups: list[SeriesGroup]) -> list[int]:
+    """Return the indices of series that should be excluded from labeling by default.
+
+    Currently flags series where ``is_localizer=True`` (scout scans, AAHeadScout,
+    etc.).  Used both to pre-populate the filter GUI and for headless pipelines.
+    """
+    return [i for i, g in enumerate(series_groups) if g.is_localizer]
+
+
 def _auto_label(groups: list[SeriesGroup], manifest: list[dict]) -> list[LabeledSeries]:
     """Apply heuristic suggestions without user input (used by tests)."""
     labeled: list[LabeledSeries] = []

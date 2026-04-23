@@ -58,6 +58,8 @@ class LabelForm(ttk.Frame):
             logger.warning("BIDS schema unavailable; dropdowns will not be populated")
 
         self._entity_vars: dict[str, tk.StringVar] = {}
+        # Entity fields for common optional BIDS labels not always in the schema
+        self._optional_entity_vars: dict[str, tk.StringVar] = {}
         self._build()
 
     def _build(self) -> None:
@@ -85,16 +87,21 @@ class LabelForm(ttk.Frame):
         self._suffix_cb.grid(row=1, column=1, sticky=tk.W, padx=4)
         self._suffix_cb.bind("<<ComboboxSelected>>", self._on_suffix_change)
 
-        # Entity fields (rendered dynamically)
+        # Entity fields (rendered dynamically from schema)
         self._entities_frame = ttk.LabelFrame(form, text="Entities")
-        self._entities_frame.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=8)
+        self._entities_frame.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=4)
+
+        # Optional BIDS labels — always visible, common entities not always in schema
+        self._optional_frame = ttk.LabelFrame(form, text="Optional BIDS Labels")
+        self._optional_frame.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=4)
+        self._build_optional_entity_fields()
 
         # Custom criteria
         ttk.Label(form, text="Extra criteria (JSON):", anchor=tk.W).grid(
-            row=3, column=0, sticky=tk.NW, pady=4
+            row=4, column=0, sticky=tk.NW, pady=4
         )
         self._criteria_text = tk.Text(form, height=3, width=28)
-        self._criteria_text.grid(row=3, column=1, sticky=tk.W, padx=4)
+        self._criteria_text.grid(row=4, column=1, sticky=tk.W, padx=4)
 
         # Apply to all matching
         self._apply_all_var = tk.BooleanVar(value=False)
@@ -102,7 +109,7 @@ class LabelForm(ttk.Frame):
             form,
             text='Apply to all series with same description',
             variable=self._apply_all_var,
-        ).grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=4)
+        ).grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=4)
 
         # Navigation buttons
         btn_frame = ttk.Frame(self)
@@ -114,6 +121,53 @@ class LabelForm(ttk.Frame):
         # Pre-populate suffix dropdown if a suggested datatype is set
         if self._group.suggested_datatype:
             self._on_datatype_change()
+
+    # Common optional BIDS entities to always expose, regardless of schema response.
+    # Format: (entity_key, display_label)
+    _OPTIONAL_ENTITIES: list[tuple[str, str]] = [
+        ("desc",  "desc-  (Description)"),
+        ("space", "space- (Space)"),
+        ("res",   "res-   (Resolution)"),
+        ("label", "label- (Label)"),
+        ("part",  "part-  (Part: mag/phase)"),
+        ("den",   "den-   (Density)"),
+    ]
+
+    def _build_optional_entity_fields(self) -> None:
+        """Populate the Optional BIDS Labels section.
+
+        Entities already shown in the schema-driven section are omitted to
+        avoid duplication.  Called once at build time and again whenever the
+        schema section is rebuilt (datatype/suffix change).
+        """
+        for widget in self._optional_frame.winfo_children():
+            widget.destroy()
+        self._optional_entity_vars.clear()
+
+        already_shown = set(self._entity_vars.keys())
+        row_idx = 0
+        for entity_key, display_label in self._OPTIONAL_ENTITIES:
+            if entity_key in already_shown:
+                continue
+            var = tk.StringVar()
+            self._optional_entity_vars[entity_key] = var
+            ttk.Label(
+                self._optional_frame,
+                text=display_label,
+                width=26,
+                anchor=tk.W,
+            ).grid(row=row_idx, column=0, sticky=tk.W, padx=4, pady=2)
+            ttk.Entry(
+                self._optional_frame, textvariable=var, width=18
+            ).grid(row=row_idx, column=1, sticky=tk.W, padx=4, pady=2)
+            row_idx += 1
+
+        if row_idx == 0:
+            ttk.Label(
+                self._optional_frame,
+                text="(all optional labels are covered by the Entities section above)",
+                foreground="gray",
+            ).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=4, pady=2)
 
     def _on_datatype_change(self, _event=None) -> None:
         datatype = self._datatype_var.get()
@@ -133,6 +187,8 @@ class LabelForm(ttk.Frame):
         self._entity_vars.clear()
 
         if not self._schema or not datatype or not suffix:
+            # Rebuild optional section with no schema entities present
+            self._build_optional_entity_fields()
             return
 
         required = self._schema.get_required_entities(datatype, suffix)
@@ -154,6 +210,9 @@ class LabelForm(ttk.Frame):
                 row=row_idx, column=1, sticky=tk.W, padx=4, pady=2
             )
 
+        # Rebuild optional section to exclude any entities now in schema section
+        self._build_optional_entity_fields()
+
     def _submit(self) -> None:
         datatype = self._datatype_var.get().strip()
         suffix = self._suffix_var.get().strip()
@@ -172,7 +231,12 @@ class LabelForm(ttk.Frame):
             if not ok:
                 return
 
+        # Merge schema-driven entities and manually entered optional labels
         entities = {k: v.get().strip() for k, v in self._entity_vars.items() if v.get().strip()}
+        for k, v in self._optional_entity_vars.items():
+            val = v.get().strip()
+            if val:
+                entities[k] = val
 
         # Parse optional custom criteria JSON
         custom_criteria: dict = {}

@@ -54,9 +54,10 @@ def _sample_nifti(path: Path) -> np.ndarray:
     img = nib.load(str(path))
     data = np.asarray(img.dataobj, dtype=np.float32)
 
-    # Collapse to 3D
+    # Collapse to 3D: use the last volume for 4D data (more informative for
+    # PET late-phase, fMRI steady-state, and multi-echo series than the middle)
     if data.ndim == 4:
-        data = data[..., data.shape[3] // 2]
+        data = data[..., -1]
 
     # Take middle axial slice
     mid = data.shape[2] // 2

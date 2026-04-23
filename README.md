@@ -87,13 +87,23 @@ bids-label /data/my_study
 bids-label /data/my_study --headless
 ```
 
-**GUI mode** shows:
-- A representative image slice for each series
-- The inferred series description, modality, subject, and session
-- Dropdown menus for BIDS `datatype` (`anat`, `func`, `dwi`, `fmap`, …) and
-  `suffix` (`T1w`, `bold`, `dwi`, …) populated directly from the bundled BIDS
-  specification schema
-- Required entity fields rendered dynamically (e.g. `task` for `func/bold`)
+**GUI mode** walks you through two steps:
+
+1. **Series filter** — a scrollable checkbox list of every detected series.
+   Localizer and scout scans are pre-checked for exclusion. Uncheck any that
+   should be included, or check additional ones to skip, then click
+   *Proceed to Labeling*.
+
+2. **Labeling loop** — for each series kept:
+   - A representative image slice (`4D` series show the last volume, which is
+     more informative for PET, fMRI, and multi-echo acquisitions)
+   - Inferred series description, modality, subject, and session
+   - Dropdown menus for BIDS `datatype` (`anat`, `func`, `dwi`, `fmap`, …) and
+     `suffix` (`T1w`, `bold`, `dwi`, …) sourced from the bundled BIDS schema
+   - Required entity fields rendered dynamically (e.g. `task` for `func/bold`)
+   - Optional BIDS entity fields: `desc-`, `space-`, `res-`, `label-`,
+     `part-`, `den-`
+   - *Apply to all matching* checkbox for bulk-labeling identical series
 
 **Headless mode** applies keyword-based heuristics to the series descriptions
 without user interaction. Review the generated config before converting.

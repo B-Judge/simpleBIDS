@@ -48,7 +48,9 @@ class App(tk.Tk):
 
         self._input_dir: Path | None = None
         self._output_dir: Path | None = None
-        self._series_groups = []
+        self._series_groups: list = []
+        # Subset chosen by the filter screen; may differ from _series_groups
+        self._labeling_groups: list = []
         self._labeled_series: list[LabeledSeries] = []
         self._label_index: int = 0
 
@@ -194,8 +196,23 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
 
     def _start_labeling(self) -> None:
+        """Show the filter screen, then begin labeling the surviving series."""
         self._labeled_series = []
         self._label_index = 0
+        self._show_filter()
+
+    def _show_filter(self) -> None:
+        self._clear_content()
+        from simpleBIDS.gui.series_filter import SeriesFilterPanel
+        SeriesFilterPanel(
+            self._content,
+            series_groups=self._series_groups,
+            on_confirm=self._on_filter_confirm,
+        ).pack(fill=tk.BOTH, expand=True)
+
+    def _on_filter_confirm(self, filtered_groups: list) -> None:
+        """Store the filtered series list and start the labeling loop."""
+        self._labeling_groups = filtered_groups
         self._show_next_series()
 
     def _resume_labeling(self) -> None:
@@ -207,12 +224,13 @@ class App(tk.Tk):
         self._show_next_series()
 
     def _show_next_series(self) -> None:
-        if self._label_index >= len(self._series_groups):
+        groups = self._labeling_groups
+        if self._label_index >= len(groups):
             self._finish_labeling()
             return
 
         self._clear_content()
-        group = self._series_groups[self._label_index]
+        group = groups[self._label_index]
 
         from simpleBIDS.gui.series_panel import SeriesPanel
         from simpleBIDS.gui.label_form import LabelForm
@@ -228,7 +246,7 @@ class App(tk.Tk):
             on_skip=self._on_label_skip,
             on_back=self._on_label_back,
             current=self._label_index + 1,
-            total=len(self._series_groups),
+            total=len(groups),
         ).pack(fill=tk.BOTH, expand=True, side=tk.RIGHT)
 
     def _on_label_submit(self, labeled: LabeledSeries) -> None:
@@ -248,7 +266,7 @@ class App(tk.Tk):
             # Only pop the last label if it actually belongs to the series we
             # are going back to. Skipped series don't add to _labeled_series,
             # so a naive pop() would remove the wrong entry.
-            prev_group = self._series_groups[self._label_index]
+            prev_group = self._labeling_groups[self._label_index]
             if self._labeled_series and self._labeled_series[-1].series_group is prev_group:
                 self._labeled_series.pop()
         self._show_next_series()
@@ -370,11 +388,19 @@ class App(tk.Tk):
                 "exclude": ls.exclude,
             })
 
+        # Record which series were excluded by the filter so resume can
+        # reconstruct the same labeling_groups without re-showing the filter.
+        excluded_indices = [
+            i for i, g in enumerate(self._series_groups)
+            if g not in self._labeling_groups
+        ]
+
         cache = {
             "input_dir": str(self._input_dir),
             "output_dir": str(self._output_dir),
             "label_index": self._label_index,
             "labeled_decisions": decisions,
+            "excluded_indices": excluded_indices,
         }
         try:
             (cache_dir / _SESSION_NAME).write_text(
@@ -416,6 +442,15 @@ class App(tk.Tk):
                         ))
 
                 self._label_index = cache.get("label_index", 0)
+
+                # Reconstruct labeling_groups from saved excluded indices so
+                # resume uses the same filtered set without re-showing the filter.
+                excluded = set(cache.get("excluded_indices", []))
+                self._labeling_groups = [
+                    g for i, g in enumerate(self._series_groups)
+                    if i not in excluded
+                ]
+
                 # Use _resume_labeling (not _start_labeling) so the restored
                 # decisions and index are not reset when the user clicks Confirm.
                 self.after(0, lambda: self._show_study_config(on_confirm=self._resume_labeling))
@@ -462,7 +497,8 @@ def run_label_gui(
         success, or ``None`` if the user closed the window before finishing.
     """
     result: list[LabeledSeries] = []
-    state = {"index": 0, "labeled": [], "cancelled": False}
+    # "groups" in state may be narrowed by the filter screen
+    state = {"index": 0, "labeled": [], "cancelled": False, "groups": list(groups)}
 
     root = tk.Tk()
     root.title("simpleBIDS — Label Series")
@@ -483,12 +519,13 @@ def run_label_gui(
             widget.destroy()
 
     def _show_next() -> None:
+        current_groups = state["groups"]
         i = state["index"]
-        if i >= len(groups):
+        if i >= len(current_groups):
             _finish()
             return
         _clear()
-        group = groups[i]
+        group = current_groups[i]
         container = ttk.Frame(content)
         container.pack(fill=tk.BOTH, expand=True)
 
@@ -505,7 +542,7 @@ def run_label_gui(
             on_skip=_on_skip,
             on_back=_on_back,
             current=i + 1,
-            total=len(groups),
+            total=len(current_groups),
         ).pack(fill=tk.BOTH, expand=True, side=tk.RIGHT)
 
     def _on_submit(labeled: LabeledSeries) -> None:
@@ -523,10 +560,24 @@ def run_label_gui(
             # Only pop the last labeled entry if it belongs to the series we
             # are navigating back to. Skipped series don't add to "labeled",
             # so a blind pop() would remove the wrong decision.
-            prev_group = groups[state["index"]]
+            prev_group = state["groups"][state["index"]]
             if state["labeled"] and state["labeled"][-1].series_group is prev_group:
                 state["labeled"].pop()
         _show_next()
+
+    def _after_filter(filtered_groups: list) -> None:
+        """Called when the user confirms the filter screen."""
+        state["groups"] = filtered_groups
+        state["index"] = 0
+        state["labeled"] = []
+        _show_next()
+
+    def _show_filter() -> None:
+        _clear()
+        from simpleBIDS.gui.series_filter import SeriesFilterPanel
+        SeriesFilterPanel(
+            content, series_groups=groups, on_confirm=_after_filter
+        ).pack(fill=tk.BOTH, expand=True)
 
     def _finish() -> None:
         nonlocal result
@@ -538,7 +589,7 @@ def run_label_gui(
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
-    _show_next()
+    _show_filter()   # start with filter before series labeling
     root.mainloop()
 
     return None if state["cancelled"] else result

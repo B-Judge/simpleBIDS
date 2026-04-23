@@ -25,12 +25,18 @@ Step 3 of 5 — Assign BIDS datatype and suffix labels to each series.
 Reads the series manifest produced by bids-sort and presents each series for
 labeling. By default opens an interactive tkinter GUI that shows:
 
-  • A representative image slice for each series
-  • The inferred series description, modality, subject ID, and session ID
-  • Dropdown menus for BIDS datatype (anat, func, dwi, fmap, perf, …) and
-    suffix (T1w, bold, dwi, …) — values sourced from the bundled BIDS schema
-  • Required entity fields rendered dynamically (e.g. task name for func/bold)
-  • "Apply to all matching" checkbox for bulk-labeling identical series
+  1. Series filter screen — checkbox list of all detected series with
+     localizer/scout scans pre-selected for exclusion. Adjust the selection,
+     then click "Proceed to Labeling" to continue with the remaining series.
+
+  2. Labeling loop — for each series to label:
+       • A representative image slice (4D series show the last volume)
+       • The inferred series description, modality, subject ID, and session ID
+       • Dropdown menus for BIDS datatype (anat, func, dwi, fmap, perf, …) and
+         suffix (T1w, bold, dwi, …) — values sourced from the bundled BIDS schema
+       • Required entity fields rendered dynamically (e.g. task for func/bold)
+       • Optional BIDS entity fields: desc-, space-, res-, label-, part-, den-
+       • "Apply to all matching" checkbox for bulk-labeling identical series
 
 On completion, writes code/dcm2bids_config.json for use by bids-convert.
 
@@ -236,6 +242,15 @@ def _group_from_entry(entry: dict) -> SeriesGroup:
         is_localizer=entry.get("is_localizer", False),
         staging_dir=staging,
     )
+
+
+def get_default_excluded_indices(series_groups: list[SeriesGroup]) -> list[int]:
+    """Return the indices of series that should be excluded from labeling by default.
+
+    Currently flags series where ``is_localizer=True`` (scout scans, AAHeadScout,
+    etc.).  Used both to pre-populate the filter GUI and for headless pipelines.
+    """
+    return [i for i, g in enumerate(series_groups) if g.is_localizer]
 
 
 def _auto_label(groups: list[SeriesGroup], manifest: list[dict]) -> list[LabeledSeries]:

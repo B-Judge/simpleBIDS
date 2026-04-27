@@ -243,7 +243,9 @@ def group_dicom_series(
             series_number=meta.series_number,
             modality=meta.modality,
             all_files=ds.all_files,
-            representative_file=ds.all_files[len(ds.all_files) // 2],
+            # Use the representative file chosen by the scanner (last temporal
+            # position, middle spatial slice) so the GUI shows the final volume.
+            representative_file=meta.representative_file,
             file_count=meta.file_count,
             suggested_datatype=datatype,
             suggested_suffix=suffix,

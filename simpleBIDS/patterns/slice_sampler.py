@@ -42,8 +42,23 @@ def _sample_dicom(path: Path) -> np.ndarray:
         raise ValueError(f"Could not read pixel data from {path}: {exc}") from exc
 
     if pixels.ndim == 3:
-        # Multi-frame: take middle frame
-        pixels = pixels[pixels.shape[0] // 2]
+        n_frames = pixels.shape[0]
+        # Check for 4D multi-frame DICOM (all volumes in one file).
+        # NumberOfTemporalPositions tells us how many volumes there are; if
+        # > 1, pick the last temporal volume (most informative for fMRI/PET).
+        # Assumes volume-first frame ordering (most common scanner convention):
+        # frames 0..S-1 = vol 0, frames S..2S-1 = vol 1, etc.
+        try:
+            n_temporal = int(getattr(ds, "NumberOfTemporalPositions", 1) or 1)
+        except (ValueError, TypeError):
+            n_temporal = 1
+        if n_temporal > 1 and n_frames >= n_temporal:
+            n_slices = n_frames // n_temporal
+            last_vol_start = n_slices * (n_temporal - 1)
+            last_vol_frames = pixels[last_vol_start: last_vol_start + n_slices]
+            pixels = last_vol_frames[len(last_vol_frames) // 2]
+        else:
+            pixels = pixels[n_frames // 2]
 
     return _normalize(pixels)
 

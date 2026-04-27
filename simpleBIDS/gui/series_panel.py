@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
 from simpleBIDS.patterns.series_grouper import SeriesGroup
@@ -17,13 +18,22 @@ class SeriesPanel(ttk.Frame):
     Args:
         parent: Parent widget.
         series_group: The series to display.
+        log_dir: Optional directory where a copy of the displayed PNG is saved
+            as a paper trail of what the user saw during labeling.
     """
 
     _IMAGE_SIZE = (320, 320)
 
-    def __init__(self, parent: tk.Widget, *, series_group: SeriesGroup) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        series_group: SeriesGroup,
+        log_dir: Path | None = None,
+    ) -> None:
         super().__init__(parent, relief=tk.GROOVE, borderwidth=1)
         self._group = series_group
+        self._log_dir = log_dir
         self._photo: tk.PhotoImage | None = None  # keep reference to avoid GC
 
         self._build()
@@ -60,6 +70,15 @@ class SeriesPanel(ttk.Frame):
 
             arr = sample_slice(self._group.representative_file)
             img = Image.fromarray(arr, mode="L").resize(self._IMAGE_SIZE, Image.LANCZOS)
+
+            # Save a copy to the logging directory as a paper trail.
+            if self._log_dir is not None:
+                try:
+                    self._log_dir.mkdir(parents=True, exist_ok=True)
+                    img.save(self._log_dir / f"{self._group.slug}.png")
+                except Exception as save_exc:
+                    logger.debug("Could not save slice preview to log_dir: %s", save_exc)
+
             self._photo = ImageTk.PhotoImage(img)
             self._canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
         except Exception as exc:

@@ -278,16 +278,27 @@ class TestScanDicomDirectory:
         nums = [s.metadata.series_number for s in series]
         assert nums == sorted(nums)
 
-    def test_series_uid_used_as_key(self, tmp_path):
-        """Two series with same description+number but different UIDs → 2 groups."""
+    def test_same_desc_same_study_merged(self, tmp_path):
+        """Multiple runs with the same description in one study → 1 merged group."""
         uid1 = pydicom.uid.generate_uid()
         uid2 = pydicom.uid.generate_uid()
         study_uid = pydicom.uid.generate_uid()
         for i in range(1, 4):
             _make_dicom(tmp_path / f"s1_{i}.dcm", series_uid=uid1, study_uid=study_uid,
-                        series_number=1, series_description="T1w", instance_number=i)
+                        series_number=1, series_description="BOLD_rest", instance_number=i)
             _make_dicom(tmp_path / f"s2_{i}.dcm", series_uid=uid2, study_uid=study_uid,
-                        series_number=1, series_description="T1w", instance_number=i)
+                        series_number=2, series_description="BOLD_rest", instance_number=i)
+        series = scan_dicom_directory(tmp_path)
+        # Same study + same description → one merged group with all 6 files
+        assert len(series) == 1
+        assert series[0].metadata.file_count == 6
+
+    def test_same_desc_different_study_separate(self, tmp_path):
+        """Same description but different studies (patients) → 2 separate groups."""
+        study_uid_a = pydicom.uid.generate_uid()
+        study_uid_b = pydicom.uid.generate_uid()
+        _make_dicom(tmp_path / "a.dcm", study_uid=study_uid_a, series_description="T1w")
+        _make_dicom(tmp_path / "b.dcm", study_uid=study_uid_b, series_description="T1w")
         series = scan_dicom_directory(tmp_path)
         assert len(series) == 2
 
@@ -298,15 +309,149 @@ class TestScanDicomDirectory:
 
 def test_walk_dicom_directory_returns_dict(tmp_path):
     uid = pydicom.uid.generate_uid()
+    study_uid = pydicom.uid.generate_uid()  # shared study so files merge into one group
     for i in range(1, 4):
-        _make_dicom(tmp_path / f"s{i}.dcm", series_uid=uid, series_description="T1w",
-                    series_number=1, instance_number=i)
+        _make_dicom(tmp_path / f"s{i}.dcm", series_uid=uid, study_uid=study_uid,
+                    series_description="T1w", series_number=1, instance_number=i)
     result = walk_dicom_directory(tmp_path)
     assert isinstance(result, dict)
     assert len(result) == 1
     key = list(result.keys())[0]
     assert key == ("T1w", 1)
     assert len(result[key]) == 3
+
+
+# ---------------------------------------------------------------------------
+# PET tracer grouping
+# ---------------------------------------------------------------------------
+
+
+def _make_pet_dicom(
+    path: Path,
+    *,
+    study_uid: str,
+    series_description: str = "PET_WB",
+    radiopharmaceutical: str = "FDG",
+    instance_number: int = 1,
+) -> Path:
+    """Write a minimal PET DICOM with a RadiopharmaceuticalInformationSequence."""
+    import pydicom.uid
+    from pydicom.dataset import FileDataset, Dataset
+    from pydicom.sequence import Sequence
+
+    file_meta = pydicom.dataset.FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.128"
+    file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+    file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+
+    ds = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\x00" * 128)
+    ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    ds.StudyInstanceUID = study_uid
+    ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+    ds.SeriesNumber = 1
+    ds.InstanceNumber = instance_number
+    ds.SeriesDescription = series_description
+    ds.Modality = "PT"
+    ds.Rows = 16
+    ds.Columns = 16
+
+    radio_item = Dataset()
+    radio_item.Radiopharmaceutical = radiopharmaceutical
+    ds.RadiopharmaceuticalInformationSequence = Sequence([radio_item])
+
+    pydicom.dcmwrite(str(path), ds)
+    return path
+
+
+def test_pet_same_tracer_same_study_merged(tmp_path):
+    """PET frames with the same tracer and study are merged into one group."""
+    study_uid = pydicom.uid.generate_uid()
+    _make_pet_dicom(tmp_path / "a.dcm", study_uid=study_uid, radiopharmaceutical="FDG", instance_number=1)
+    _make_pet_dicom(tmp_path / "b.dcm", study_uid=study_uid, radiopharmaceutical="FDG", instance_number=2)
+    series = scan_dicom_directory(tmp_path)
+    assert len(series) == 1
+    assert series[0].metadata.file_count == 2
+
+
+def test_pet_different_tracer_same_study_separate(tmp_path):
+    """PET with different tracers in one study → separate groups."""
+    study_uid = pydicom.uid.generate_uid()
+    _make_pet_dicom(tmp_path / "fdg.dcm", study_uid=study_uid, radiopharmaceutical="FDG")
+    _make_pet_dicom(tmp_path / "psma.dcm", study_uid=study_uid, radiopharmaceutical="PSMA-11")
+    series = scan_dicom_directory(tmp_path)
+    assert len(series) == 2
+
+
+# ---------------------------------------------------------------------------
+# 4D DICOM — last temporal position as representative
+# ---------------------------------------------------------------------------
+
+
+def _make_4d_dicom_series(
+    tmp_path: Path,
+    n_vols: int,
+    n_slices: int,
+    study_uid: str,
+    series_description: str = "BOLD_rest",
+) -> list[Path]:
+    """Write n_vols × n_slices DICOM files with TemporalPositionIdentifier set."""
+    files = []
+    inst = 1
+    for vol in range(1, n_vols + 1):
+        for slc in range(1, n_slices + 1):
+            path = tmp_path / f"vol{vol:03d}_slc{slc:03d}.dcm"
+            file_meta = pydicom.dataset.FileMetaDataset()
+            file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.4"
+            file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+            file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+            from pydicom.dataset import FileDataset
+            ds = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\x00" * 128)
+            ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+            ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+            ds.StudyInstanceUID = study_uid
+            ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+            ds.SeriesNumber = 1
+            ds.InstanceNumber = inst
+            ds.TemporalPositionIdentifier = vol
+            ds.SeriesDescription = series_description
+            ds.Modality = "MR"
+            ds.Rows = 16
+            ds.Columns = 16
+            pydicom.dcmwrite(str(path), ds)
+            files.append(path)
+            inst += 1
+    return files
+
+
+def test_4d_representative_is_from_last_volume(tmp_path):
+    """The representative file chosen for display must come from the last volume."""
+    study_uid = pydicom.uid.generate_uid()
+    n_vols, n_slices = 5, 4
+    _make_4d_dicom_series(tmp_path, n_vols=n_vols, n_slices=n_slices, study_uid=study_uid)
+
+    series = scan_dicom_directory(tmp_path)
+    assert len(series) == 1
+
+    rep = series[0].metadata.representative_file
+    ds = pydicom.dcmread(str(rep), specific_tags=["TemporalPositionIdentifier"],
+                         stop_before_pixels=True)
+    tp = int(ds.TemporalPositionIdentifier)
+    assert tp == n_vols, f"Expected representative from vol {n_vols}, got vol {tp}"
+
+
+def test_3d_series_representative_is_middle_file(tmp_path):
+    """A 3D series (no TemporalPositionIdentifier) keeps the middle-file representative."""
+    study_uid = pydicom.uid.generate_uid()
+    n_slices = 9
+    for slc in range(1, n_slices + 1):
+        _make_dicom(tmp_path / f"slc{slc:03d}.dcm", study_uid=study_uid,
+                    instance_number=slc, series_description="T1w")
+    series = scan_dicom_directory(tmp_path)
+    assert len(series) == 1
+    # All files default to temporal_pos=1, so representative is middle spatial slice
+    all_files = series[0].all_files
+    assert series[0].metadata.representative_file == all_files[len(all_files) // 2]
 
 
 # ---------------------------------------------------------------------------

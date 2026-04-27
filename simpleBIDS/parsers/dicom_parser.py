@@ -43,6 +43,8 @@ _FIRST_PASS_TAGS = [
     "SeriesDescription",
     "InstanceNumber",
     "Modality",
+    "TemporalPositionIdentifier",
+    "RadiopharmaceuticalInformationSequence",
 ]
 
 # Known DICOM file extensions (lower-cased).  Files with no extension are also
@@ -102,6 +104,9 @@ class DicomMetadata:
     # --- Functional / diffusion --------------------------------------------
     number_of_temporal_positions: int | None = None
     diffusion_b_value: float | None = None
+
+    # --- PET ---------------------------------------------------------------
+    tracer: str | None = None  # Radiopharmaceutical from RadiopharmaceuticalInformationSequence
 
     # --- Flags -------------------------------------------------------------
     is_localizer: bool = False
@@ -182,6 +187,17 @@ def parse_dicom_file(path: Path) -> DicomMetadata:
 
     is_loc = _is_localizer_raw(image_type, _str("SeriesDescription"))
 
+    # PET tracer name from RadiopharmaceuticalInformationSequence
+    tracer: str | None = None
+    if _str("Modality") == "PT":
+        try:
+            radio_seq = getattr(ds, "RadiopharmaceuticalInformationSequence", None)
+            if radio_seq and len(radio_seq) > 0:
+                t = str(getattr(radio_seq[0], "Radiopharmaceutical", "") or "").strip()
+                tracer = t or None
+        except Exception:
+            logger.debug("Could not read tracer info from %s", path)
+
     return DicomMetadata(
         representative_file=path,
         file_count=1,
@@ -221,6 +237,8 @@ def parse_dicom_file(path: Path) -> DicomMetadata:
         # Functional / diffusion
         number_of_temporal_positions=_int("NumberOfTemporalPositions"),
         diffusion_b_value=b_value,
+        # PET
+        tracer=tracer,
         # Flags
         is_localizer=is_loc,
     )
@@ -276,15 +294,15 @@ def scan_dicom_directory(
     logger.info("Scanning %d candidate files under %s", total, root)
 
     # --- First pass: group files by series ---------------------------------
-    # Maps series_key → list of (instance_number, path)
-    groups: dict[str, list[tuple[int, Path]]] = {}
+    # Maps series_key → list of (instance_number, temporal_pos, path)
+    groups: dict[str, list[tuple[int, int, Path]]] = {}
     # Also keep one raw first-pass dataset per series for the key metadata
     key_meta: dict[str, dict] = {}
 
     done = 0
 
-    def _read_first(path: Path) -> tuple[str, int, Path, dict] | None:
-        """Return (series_key, instance_number, path, raw_meta) or None."""
+    def _read_first(path: Path) -> tuple[str, int, int, Path, dict] | None:
+        """Return (series_key, instance_number, temporal_pos, path, raw_meta) or None."""
         try:
             ds = pydicom.dcmread(
                 str(path),
@@ -298,7 +316,10 @@ def scan_dicom_directory(
 
         series_key, raw = _extract_series_key(ds, path)
         inst = _safe_int(getattr(ds, "InstanceNumber", None)) or 0
-        return series_key, inst, path, raw
+        # TemporalPositionIdentifier identifies which volume in a 4D series (1-indexed).
+        # Default to 1 so 3D series are treated as single-volume.
+        temporal_pos = _safe_int(getattr(ds, "TemporalPositionIdentifier", None)) or 1
+        return series_key, inst, temporal_pos, path, raw
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
         futures = {pool.submit(_read_first, f): f for f in candidate_files}
@@ -309,18 +330,25 @@ def scan_dicom_directory(
             result = future.result()
             if result is None:
                 continue
-            series_key, inst, path, raw = result
-            groups.setdefault(series_key, []).append((inst, path))
+            series_key, inst, temporal_pos, path, raw = result
+            groups.setdefault(series_key, []).append((inst, temporal_pos, path))
             if series_key not in key_meta:
                 key_meta[series_key] = raw
 
     # --- Second pass: read full metadata for representative of each group --
     series_list: list[DicomSeries] = []
-    for series_key, inst_file_pairs in groups.items():
-        # Sort by InstanceNumber, then filename for stability
-        sorted_pairs = sorted(inst_file_pairs, key=lambda x: (x[0], str(x[1])))
-        sorted_files = [p for _, p in sorted_pairs]
-        representative = sorted_files[len(sorted_files) // 2]
+    for series_key, inst_tp_file_triples in groups.items():
+        # Sort all files by (InstanceNumber, filename) for the full file list
+        sorted_triples = sorted(inst_tp_file_triples, key=lambda x: (x[0], str(x[2])))
+        sorted_files = [p for _, _, p in sorted_triples]
+
+        # For the representative file, prefer the last temporal position so that
+        # the GUI shows the final volume of 4D series (more informative for fMRI,
+        # dynamic PET, and multi-echo acquisitions than a middle volume).
+        max_tp = max(tp for _, tp, _ in inst_tp_file_triples)
+        last_vol = [(i, tp, p) for i, tp, p in inst_tp_file_triples if tp == max_tp]
+        last_vol.sort(key=lambda x: (x[0], str(x[2])))
+        representative = last_vol[len(last_vol) // 2][2]
 
         try:
             meta = parse_dicom_file(representative)
@@ -349,8 +377,8 @@ def scan_dicom_directory(
 def walk_dicom_directory(root: Path) -> dict[tuple[str | None, int | None], list[Path]]:
     """Compatibility wrapper — returns the old ``(desc, num) → files`` mapping.
 
-    New code should call :func:`scan_dicom_directory` instead, which uses
-    ``SeriesInstanceUID`` for grouping and returns richer metadata.
+    New code should call :func:`scan_dicom_directory` instead, which groups
+    by ``(StudyInstanceUID, SeriesDescription)`` and returns richer metadata.
     """
     series_list = scan_dicom_directory(root, n_workers=1)
     result: dict[tuple[str | None, int | None], list[Path]] = {}
@@ -374,12 +402,20 @@ def _iter_candidate_files(root: Path) -> Iterator[Path]:
 
 
 def _extract_series_key(ds: pydicom.Dataset, path: Path) -> tuple[str, dict]:
-    """Derive a stable series grouping key from first-pass tags.
+    """Derive a grouping key based on StudyInstanceUID + SeriesDescription.
 
-    Preference order:
-    1. ``SeriesInstanceUID`` — globally unique, ideal.
-    2. ``(StudyInstanceUID, SeriesNumber)`` — reliable fallback.
-    3. ``(StudyDate, SeriesDescription, SeriesNumber)`` — last resort.
+    All acquisitions of the same sequence within one scanning session share
+    the same StudyInstanceUID and SeriesDescription, so they are merged into
+    a single :class:`DicomSeries`.  This lets users label e.g. "BOLD_rest"
+    once rather than separately for every run.
+
+    For PET series the radiotracer name is appended so that datasets acquired
+    with different tracers remain as separate groups even if the description
+    happens to be identical.
+
+    Fallback when SeriesDescription is absent:
+    1. ``(StudyInstanceUID, SeriesNumber)``
+    2. ``(parent directory, SeriesNumber)``
     """
     raw = {
         "SeriesInstanceUID": str(getattr(ds, "SeriesInstanceUID", "") or "").strip(),
@@ -387,18 +423,33 @@ def _extract_series_key(ds: pydicom.Dataset, path: Path) -> tuple[str, dict]:
         "SeriesNumber": _safe_int(getattr(ds, "SeriesNumber", None)),
         "SeriesDescription": str(getattr(ds, "SeriesDescription", "") or "").strip(),
         "Modality": str(getattr(ds, "Modality", "") or "").strip(),
+        "Tracer": "",
     }
 
-    if raw["SeriesInstanceUID"]:
-        return raw["SeriesInstanceUID"], raw
+    # For PET: include tracer so different radiotracers stay as separate groups
+    if raw["Modality"] == "PT":
+        try:
+            radio_seq = getattr(ds, "RadiopharmaceuticalInformationSequence", None)
+            if radio_seq and len(radio_seq) > 0:
+                raw["Tracer"] = str(
+                    getattr(radio_seq[0], "Radiopharmaceutical", "") or ""
+                ).strip()
+        except Exception:
+            pass
 
-    if raw["StudyInstanceUID"] and raw["SeriesNumber"] is not None:
-        key = f"{raw['StudyInstanceUID']}::{raw['SeriesNumber']}"
-        return key, raw
+    study = raw["StudyInstanceUID"]
+    desc = raw["SeriesDescription"]
+    tracer = raw["Tracer"]
 
-    # Absolute fallback — use parent directory + description + number
-    key = f"{path.parent}::{raw['SeriesDescription']}::{raw['SeriesNumber']}"
-    return key, raw
+    if desc:
+        parts = [p for p in [study, desc, tracer] if p]
+        return "::".join(parts), raw
+
+    # Fallback when no description
+    if study and raw["SeriesNumber"] is not None:
+        return f"{study}::{raw['SeriesNumber']}", raw
+
+    return f"{path.parent}::{raw['SeriesNumber']}", raw
 
 
 def _meta_from_first_pass(raw: dict, path: Path, file_count: int) -> DicomMetadata:
@@ -411,6 +462,7 @@ def _meta_from_first_pass(raw: dict, path: Path, file_count: int) -> DicomMetada
         series_description=raw.get("SeriesDescription") or None,
         series_number=raw.get("SeriesNumber"),
         modality=raw.get("Modality") or None,
+        tracer=raw.get("Tracer") or None,
     )
 
 

@@ -238,7 +238,13 @@ class App(tk.Tk):
         container = ttk.Frame(self._content)
         container.pack(fill=tk.BOTH, expand=True)
 
-        SeriesPanel(container, series_group=group).pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        log_dir = (
+            self._output_dir / _CACHE_DIRNAME / "label_previews"
+            if self._output_dir else None
+        )
+        SeriesPanel(container, series_group=group, log_dir=log_dir).pack(
+            fill=tk.BOTH, expand=True, side=tk.LEFT
+        )
         LabelForm(
             container,
             series_group=group,
@@ -532,7 +538,8 @@ def run_label_gui(
         from simpleBIDS.gui.series_panel import SeriesPanel
         from simpleBIDS.gui.label_form import LabelForm
 
-        SeriesPanel(container, series_group=group).pack(
+        log_dir = bids_root / ".simpleBIDS_cache" / "label_previews"
+        SeriesPanel(container, series_group=group, log_dir=log_dir).pack(
             fill=tk.BOTH, expand=True, side=tk.LEFT
         )
         LabelForm(

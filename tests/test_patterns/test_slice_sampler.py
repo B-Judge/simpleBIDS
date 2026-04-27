@@ -140,6 +140,57 @@ def test_sample_dicom_multiframe_returns_2d(tmp_path: Path) -> None:
     assert result.ndim == 2
 
 
+def test_sample_dicom_multiframe_4d_uses_last_volume(tmp_path: Path) -> None:
+    """Multi-frame 4D DICOM: last temporal volume must be selected."""
+    import pydicom
+    import pydicom.uid
+    from pydicom.dataset import FileDataset
+    from simpleBIDS.patterns.slice_sampler import _sample_dicom
+
+    rows, cols, n_vols, n_slices = 16, 16, 3, 4
+    n_frames = n_vols * n_slices
+
+    file_meta = pydicom.dataset.FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.4"
+    file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+    file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+
+    ds = FileDataset(str(tmp_path / "4d.dcm"), {}, file_meta=file_meta, preamble=b"\x00" * 128)
+    ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.BitsAllocated = 16
+    ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.NumberOfFrames = n_frames
+    ds.NumberOfTemporalPositions = n_vols
+    ds.Rows = rows
+    ds.Columns = cols
+
+    # Volume-first ordering: frames 0..3 = vol1 (flat 0), frames 4..7 = vol2 (flat 100),
+    # frames 8..11 = vol3 (gradient — the last volume).
+    pixels = np.zeros((n_frames, rows, cols), dtype=np.uint16)
+    for frame_idx in range(n_slices):              # vol1 = 0
+        pixels[frame_idx] = 0
+    for frame_idx in range(n_slices, 2 * n_slices):  # vol2 = 100
+        pixels[frame_idx] = 100
+    for frame_idx in range(2 * n_slices, n_frames):   # vol3 = gradient
+        pixels[frame_idx] = np.arange(rows * cols, dtype=np.uint16).reshape(rows, cols)
+
+    ds.PixelData = pixels.tobytes()
+    path = tmp_path / "4d.dcm"
+    pydicom.dcmwrite(str(path), ds)
+
+    result = _sample_dicom(path)
+    assert result.ndim == 2
+    # Last volume has a gradient → max > 0. Middle volume is flat 100 which
+    # after percentile normalization would also be non-zero but with all equal
+    # values → we verify the last volume by checking it normalizes to varying values.
+    assert result.max() > result.min(), "Last volume (gradient) should have varying pixel values"
+
+
 def test_sample_dicom_raises_on_no_pixel_data(tmp_path: Path) -> None:
     from simpleBIDS.patterns.slice_sampler import _sample_dicom
     import pydicom

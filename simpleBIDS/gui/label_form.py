@@ -8,6 +8,7 @@ from tkinter import messagebox, ttk
 from typing import Callable
 
 from simpleBIDS.bids.config_builder import LabeledSeries
+from simpleBIDS.cli.label import BIDS_OPTIONAL_ENTITIES
 from simpleBIDS.patterns.series_grouper import SeriesGroup
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,6 @@ class LabelForm(ttk.Frame):
             logger.warning("BIDS schema unavailable; dropdowns will not be populated")
 
         self._entity_vars: dict[str, tk.StringVar] = {}
-        # Entity fields for common optional BIDS labels not always in the schema
         self._optional_entity_vars: dict[str, tk.StringVar] = {}
         self._build()
 
@@ -103,14 +103,6 @@ class LabelForm(ttk.Frame):
         self._criteria_text = tk.Text(form, height=3, width=28)
         self._criteria_text.grid(row=4, column=1, sticky=tk.W, padx=4)
 
-        # Apply to all matching
-        self._apply_all_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            form,
-            text='Apply to all series with same description',
-            variable=self._apply_all_var,
-        ).grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=4)
-
         # Navigation buttons
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=12)
@@ -122,16 +114,11 @@ class LabelForm(ttk.Frame):
         if self._group.suggested_datatype:
             self._on_datatype_change()
 
-    # Common optional BIDS entities to always expose, regardless of schema response.
-    # Format: (entity_key, display_label)
-    _OPTIONAL_ENTITIES: list[tuple[str, str]] = [
-        ("desc",  "desc-  (Description)"),
-        ("space", "space- (Space)"),
-        ("res",   "res-   (Resolution)"),
-        ("label", "label- (Label)"),
-        ("part",  "part-  (Part: mag/phase)"),
-        ("den",   "den-   (Density)"),
-    ]
+    # All standard BIDS entities exposed as optional inputs.
+    # Defined in cli/label.py so non-GUI code and tests can import without tkinter.
+    # Entities already shown in the schema-driven section are filtered out at
+    # build time; sub and ses are never included (they are inferred).
+    _OPTIONAL_ENTITIES = BIDS_OPTIONAL_ENTITIES
 
     def _build_optional_entity_fields(self) -> None:
         """Populate the Optional BIDS Labels section.

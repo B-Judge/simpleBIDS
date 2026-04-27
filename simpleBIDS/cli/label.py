@@ -244,6 +244,46 @@ def _group_from_entry(entry: dict) -> SeriesGroup:
     )
 
 
+# ---------------------------------------------------------------------------
+# BIDS optional entity definitions (shared with gui/label_form.py)
+# Kept here so non-GUI code and tests can import without requiring tkinter.
+# Format: (entity_key, display_label)
+# ---------------------------------------------------------------------------
+BIDS_OPTIONAL_ENTITIES: list[tuple[str, str]] = [
+    # --- Acquisition / sequence ----------------------------------------
+    ("task",  "task-  (Task name)"),
+    ("acq",   "acq-   (Acquisition)"),
+    ("ce",    "ce-    (Contrast agent)"),
+    ("trc",   "trc-   (Tracer, PET)"),
+    ("stain", "stain- (Stain, microscopy)"),
+    ("rec",   "rec-   (Reconstruction)"),
+    ("dir",   "dir-   (Phase-encode direction)"),
+    ("run",   "run-   (Run index)"),
+    ("mod",   "mod-   (Modality, derivatives)"),
+    # --- Multi-echo / multi-flip / inversion ----------------------------
+    ("echo",  "echo-  (Echo number)"),
+    ("flip",  "flip-  (Flip angle index)"),
+    ("inv",   "inv-   (Inversion index)"),
+    ("mt",    "mt-    (MT saturation, on/off)"),
+    ("part",  "part-  (Signal part: mag/phase)"),
+    # --- Processing / derivatives ---------------------------------------
+    ("proc",  "proc-  (Processing label)"),
+    ("hemi",  "hemi-  (Hemisphere, L/R)"),
+    ("space", "space- (Coordinate space)"),
+    ("split", "split- (File split index)"),
+    ("res",   "res-   (Resolution)"),
+    ("den",   "den-   (Density, surfaces)"),
+    ("label", "label- (Tissue label)"),
+    ("desc",  "desc-  (Description, free text)"),
+    # --- Microscopy / atlas / transforms --------------------------------
+    ("chunk", "chunk- (Chunk, microscopy)"),
+    ("sample","sample-(Sample, microscopy)"),
+    ("atlas", "atlas- (Atlas label)"),
+    ("from",  "from-  (Transform source space)"),
+    ("to",    "to-    (Transform target space)"),
+]
+
+
 def get_default_excluded_indices(series_groups: list[SeriesGroup]) -> list[int]:
     """Return the indices of series that should be excluded from labeling by default.
 

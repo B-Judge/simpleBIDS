@@ -46,7 +46,12 @@ def build_config(labeled_series: list[LabeledSeries]) -> dict:
         }
 
         if ls.entities:
-            entry["custom_entities"] = ls.entities
+            # dcm2bids 3.x expects custom_entities as a string of the form
+            # "key-value" or "key1-val1_key2-val2" — NOT a JSON object.
+            # Passing a dict causes AttributeError in Acquisition.prepend().
+            entry["custom_entities"] = "_".join(
+                f"{k}-{v}" for k, v in ls.entities.items() if v
+            )
 
         descriptions.append(entry)
 
@@ -74,8 +79,6 @@ def _build_criteria(ls: LabeledSeries) -> dict:
 
     if group.series_description:
         criteria["SeriesDescription"] = group.series_description
-    if group.series_number is not None:
-        criteria["SeriesNumber"] = group.series_number
 
     # Extra discriminating fields (e.g. ImageType) passed through from grouper
     dicom_meta = group.extra.get("dicom_metadata")

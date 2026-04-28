@@ -83,6 +83,7 @@ def _run_dcm2bids(
         "--session", session_id,
         "--config", str(config_path),
         "--output_dir", str(bids_root),
+        "--force_dcm2bids",
     ]
     log(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -200,7 +201,7 @@ def _place_nifti_files(
 
         datatype = match.get("datatype", "anat")
         suffix = match.get("suffix", "T1w")
-        entities: dict[str, str] = match.get("custom_entities", {})
+        entities: dict[str, str] = _parse_custom_entities(match.get("custom_entities", ""))
         bids_name = _build_bids_filename(subject_id, session_id, entities, suffix)
 
         dest_dir = bids_root / f"sub-{subject_id}" / f"ses-{session_id}" / datatype
@@ -212,6 +213,25 @@ def _place_nifti_files(
                 dest = dest_dir / (bids_name + src_ext)
                 shutil.move(str(src), str(dest))
                 log(f"  → {dest.relative_to(bids_root)}")
+
+
+def _parse_custom_entities(custom_entities: str | dict) -> dict[str, str]:
+    """Parse custom_entities into a key→value dict.
+
+    dcm2bids 3.x stores custom_entities as a string ``"key-val"`` or
+    ``"k1-v1_k2-v2"``.  The dcm2niix fallback path needs a dict, so we
+    convert here.  Legacy dict values are passed through unchanged.
+    """
+    if isinstance(custom_entities, dict):
+        return custom_entities
+    if not custom_entities:
+        return {}
+    result: dict[str, str] = {}
+    for token in custom_entities.split("_"):
+        if "-" in token:
+            key, _, val = token.partition("-")
+            result[key] = val
+    return result
 
 
 def _match_description(stem: str, descriptions: list[dict]) -> dict | None:

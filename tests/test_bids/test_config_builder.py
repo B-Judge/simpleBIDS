@@ -97,8 +97,10 @@ def test_build_config_entities_added_as_custom_entities(tmp_path: Path) -> None:
     config = build_config([ls])
     desc = config["descriptions"][0]
     assert "custom_entities" in desc
-    assert desc["custom_entities"]["task"] == "rest"
-    assert desc["custom_entities"]["run"] == "01"
+    # dcm2bids 3.x requires a string, not a dict
+    assert isinstance(desc["custom_entities"], str)
+    assert "task-rest" in desc["custom_entities"]
+    assert "run-01" in desc["custom_entities"]
 
 
 def test_build_config_no_entities_no_custom_entities_key(tmp_path: Path) -> None:
@@ -129,10 +131,11 @@ def test_build_criteria_series_description(tmp_path: Path) -> None:
     assert criteria["SeriesDescription"] == "T1w_MPRAGE"
 
 
-def test_build_criteria_series_number(tmp_path: Path) -> None:
+def test_build_criteria_no_series_number(tmp_path: Path) -> None:
+    """SeriesNumber is excluded from criteria to allow multi-run matching."""
     ls = _make_labeled(tmp_path, series_number=3)
     criteria = _build_criteria(ls)
-    assert criteria["SeriesNumber"] == 3
+    assert "SeriesNumber" not in criteria
 
 
 def test_build_criteria_no_series_number_when_none(tmp_path: Path) -> None:
@@ -223,30 +226,31 @@ def test_write_config_overwrites_existing(tmp_path: Path) -> None:
 
 
 def test_optional_label_desc_in_custom_entities(tmp_path: Path) -> None:
-    """desc- entity passed via LabeledSeries.entities appears in custom_entities."""
+    """desc- entity passed via LabeledSeries.entities appears in custom_entities string."""
     ls = _make_labeled(tmp_path, entities={"desc": "preproc"})
     config = build_config([ls])
-    assert config["descriptions"][0]["custom_entities"]["desc"] == "preproc"
+    assert config["descriptions"][0]["custom_entities"] == "desc-preproc"
 
 
 def test_optional_label_space_in_custom_entities(tmp_path: Path) -> None:
-    """space- entity appears in custom_entities."""
+    """space- entity appears in custom_entities string."""
     ls = _make_labeled(tmp_path, entities={"space": "MNI152NLin2009cAsym"})
     config = build_config([ls])
-    assert config["descriptions"][0]["custom_entities"]["space"] == "MNI152NLin2009cAsym"
+    assert config["descriptions"][0]["custom_entities"] == "space-MNI152NLin2009cAsym"
 
 
 def test_optional_labels_multiple_entities(tmp_path: Path) -> None:
-    """Multiple optional entities all appear in custom_entities."""
+    """Multiple optional entities all appear in custom_entities string."""
     ls = _make_labeled(
         tmp_path,
         entities={"desc": "brain", "res": "1", "label": "GM"},
     )
     config = build_config([ls])
     ce = config["descriptions"][0]["custom_entities"]
-    assert ce["desc"] == "brain"
-    assert ce["res"] == "1"
-    assert ce["label"] == "GM"
+    assert isinstance(ce, str)
+    assert "desc-brain" in ce
+    assert "res-1" in ce
+    assert "label-GM" in ce
 
 
 def test_optional_labels_empty_entities_omits_custom_entities(tmp_path: Path) -> None:
